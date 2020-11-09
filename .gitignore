@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.idea/
+*.egg-info
+reports/
+build/
+dist/
+log/
+store.sqlite3

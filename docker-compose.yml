@@ -1,0 +1,13 @@
+version: '3'
+services:
+  worker:
+    image: cryton-worker
+    restart: always
+    build: .
+    container_name: cryton_worker
+    env_file:
+      - .env 
+    volumes:
+      - ${CRYTON_WORKER_MODULES_DIR}:${CRYTON_WORKER_MODULES_DIR}
+      - /dev/log:/dev/log
+    entrypoint: ["cryton-worker"]

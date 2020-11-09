@@ -1,0 +1,43 @@
+image: python:3.8-alpine
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+cache:
+  paths:
+    - .cache/pip
+    - venv/
+
+before_script:
+  - python --version
+  - pip install virtualenv
+  - virtualenv venv
+  - - for i in `cat .env`; do export $i; done;
+  - source venv/bin/activate
+  - python setup.py install
+  - python setup.py develop
+
+stages:
+  - unittests
+  - buildPython
+
+unittests:
+  stage: unittests
+  artifacts:
+    paths:
+      - .cache/pip
+      - venv
+  script:
+    - pytest --cov=cryton_worker tests/unit_tests/ --cov-config=.coveragerc-unit
+  coverage: '/TOTAL.*\s+(\d+%)$/'
+
+buildPython:
+    stage: buildPython
+    script:
+      - python3 setup.py bdist_wheel
+    artifacts:
+      paths:
+        - dist
+        - .cache/pip
+        - venv/
+      expire_in: 10 mins

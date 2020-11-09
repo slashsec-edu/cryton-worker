@@ -1,0 +1,36 @@
+---
+version: 1
+disable_existing_loggers: False
+formatters:
+  simple:
+    format: "%(message)s"
+
+handlers:
+  console:
+    class: logging.StreamHandler
+    level: DEBUG
+    formatter: simple
+    stream: ext://sys.stdout
+
+  sys-logger:
+    class: logging.handlers.SysLogHandler
+    level: INFO
+    address: '/dev/log'
+    formatter: simple
+
+root:
+  level: NOTSET
+  handlers: [console]
+  propagate: yes
+
+loggers:
+  cryton-worker:
+    level: INFO
+    handlers: [sys-logger]
+    propagate: no
+
+  cryton-worker-debug:
+    level: DEBUG
+    handlers: [console]
+    propagate: yes
+...
