@@ -1,6 +1,5 @@
-import importlib
+import importlib.util
 from cryton_worker.lib import logger
-import sys
 import glob
 import base64
 import os
@@ -10,16 +9,16 @@ from pymetasploit3.msfrpc import MsfRpcClient
 from cryton_worker.etc import config
 
 
-def execute_module(name: str, arguments: dict) -> dict:
+def execute_module(relative_path: str, arguments: dict) -> dict:
     """
     Execute specified module by name with arguments.
-    :param name: name of the module relative to config.MODULES_DIR
+    :param relative_path: path of the module relative to config.MODULES_DIR
     :param arguments: additional module arguments
     :return: execution result
     """
-    logger.logger.info("Executing module", module_name=name, arguments=arguments)
+    logger.logger.info("Executing module", module_name=relative_path, arguments=arguments)
 
-    ret = run_executable(name, arguments)
+    ret = run_executable(relative_path, arguments)
 
     # Encode file contents as base64
     ret_file = ret.get('file')
@@ -42,13 +41,14 @@ def execute_module(name: str, arguments: dict) -> dict:
         else:
             raise TypeError('Cannot parse type "{}" of data in "file"'.format(type(file_contents)))
 
-    logger.logger.info("Module execution finished", module_name=name, arguments=arguments, ret=ret)
+    logger.logger.info("Module execution finished", module_name=relative_path, arguments=arguments, ret=ret)
+
     return ret
 
 
 def run_executable(module_path: str, executable_args: dict) -> dict:
     """
-    Run module specified by name and arguments. The module does not have to be installed,
+    Run module specified by path and arguments. The module does not have to be installed,
     as the path is being added to the system PATH.
     :param module_path: path to the module directory relative to config.MODULES_DIR
     :param executable_args: additional module arguments
@@ -73,55 +73,52 @@ def run_executable(module_path: str, executable_args: dict) -> dict:
     return ret
 
 
-def validate_module(name: str, arguments: dict) -> dict:
+def validate_module(module_path: str, arguments: dict) -> dict:
     """
-    Validate specified module by name with arguments.
-    :param name: name of the module relative to config.MODULES_DIR
+    Validate specified module by path with arguments.
+    :param module_path: path to the module directory relative to config.MODULES_DIR
     :param arguments: additional module arguments
     :return: validation result
     """
-    logger.logger.info("Validating module", module_name=name, arguments=arguments)
+    logger.logger.info("Validating module", module_name=module_path, arguments=arguments)
 
     try:
-        module_obj = import_module(name)
+        module_obj = import_module(module_path)
     except Exception as ex:
         return {'return_code': -2, 'std_err': 'Either module {} does not exist or there is some other problem. '
-                                              'Original error: {}.'.format(name, ex)}
+                                              'Original error: {}.'.format(module_path, ex)}
 
     try:
         executable = module_obj.validate
     except AttributeError:
         # validate function does not exist
-        ret = {'return_code': -2, 'std_err': 'Module {} does not have validate function.'.format(name)}
+        ret = {'return_code': -2, 'std_err': 'Module {} does not have validate function.'.format(module_path)}
     else:
         try:
             ret_val = executable(arguments)
-            ret = {'return_code': ret_val, 'std_out': 'Module {} is valid.'.format(name)}
+            ret = {'return_code': ret_val, 'std_out': 'Module {} is valid.'.format(module_path)}
         except Exception as ex:
-            ret = {'return_code': -1, 'std_err': 'Module {} is not valid. Original exception: {}'.format(name, ex)}
+            ret = {'return_code': -1, 'std_err': 'Module {} is not valid. Original exception: {}'.format(module_path,
+                                                                                                         ex)}
 
-    logger.logger.info("Module validation finished", module_name=name, arguments=arguments, ret=ret)
+    logger.logger.info("Module validation finished", module_name=module_path, arguments=arguments, ret=ret)
+
     return ret
 
 
 def import_module(module_path: str):
     """
-    Import module specified by name. The module does not have to be installed,
+    Import module specified by path. The module does not have to be installed,
     as the path is being added to the system PATH.
     :param module_path: path to the module directory relative to config.MODULES_DIR
     :return: imported module object
     """
-    sys.path.insert(0, config.MODULES_DIR)
+    module_name = 'mod'
+    module_path = os.path.join(config.MODULES_DIR, module_path, module_name + '.py')
 
-    module = module_path
-    if not module.endswith('/'):
-        module += '/'
-    module += 'mod'
-
-    try:
-        module_obj = importlib.import_module(module)
-    except ModuleNotFoundError as ex:
-        raise ex
+    module_spec = importlib.util.spec_from_file_location(module_name, module_path)
+    module_obj = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module_obj)
 
     return module_obj
 
@@ -141,6 +138,7 @@ def list_sessions(target_ip: str) -> list:
             sessions_list.append(session_key)
 
     logger.logger.info("Listing sessions", target=target_ip, sessions_list=sessions_list)
+
     return sessions_list
 
 
@@ -155,17 +153,8 @@ def list_modules() -> list:
     files = list(filter(lambda a: a.find('__init__.py') == -1, files))
 
     logger.logger.info("Listing modules", modules_list=files)
+
     return files
-
-
-def kill_execution() -> int:  # TODO: implement later on
-    """
-    Kill chosen execution.
-    :return: return code
-    """
-
-    logger.logger.info("Killing execution")
-    return -1
 
 
 def get_file_content(file_path: str) -> bytes:

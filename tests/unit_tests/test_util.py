@@ -26,20 +26,15 @@ class TestUtil(TestCase):
 
     @patch('cryton_worker.lib.util.import_module')
     def test_run_executable_import_err(self, mock_import):
-        def raise_err():
-            raise ModuleNotFoundError
-        mock_import.side_effect = raise_err
+        mock_import.side_effect = ModuleNotFoundError
 
         ret = util.run_executable('test', {'test': 'test'})
         self.assertEqual(-2, ret.get('return_code'))
 
     @patch('cryton_worker.lib.util.import_module')
     def test_run_executable_attrib_err(self, mock_import):
-        def raise_err():
-            raise AttributeError
-
         mock = Mock()
-        mock.execute.side_effect = raise_err
+        mock.execute.side_effect = AttributeError
         mock_import.return_value = mock
 
         ret = util.run_executable('test', {'test': 'test'})
@@ -56,36 +51,28 @@ class TestUtil(TestCase):
 
     @patch('cryton_worker.lib.util.import_module')
     def test_validate_module_import_err(self, mock_import):
-        def raise_err():
-            raise ModuleNotFoundError
-        mock_import.side_effect = raise_err
+        mock_import.side_effect = ModuleNotFoundError
 
         ret = util.validate_module('test', {'test': 'test'})
         self.assertEqual(-2, ret.get('return_code'))
 
     @patch('cryton_worker.lib.util.import_module')
     def test_validate_module_attrib_err(self, mock_import):
-        def raise_err():
-            raise AttributeError
-
         mock = Mock()
-        mock.validate.side_effect = raise_err
+        mock.validate.side_effect = AttributeError
         mock_import.return_value = mock
 
         ret = util.validate_module('test', {'test': 'test'})
         self.assertEqual(-1, ret.get('return_code'))
 
-    @patch('importlib.import_module')
+    @patch('importlib.util')
     def test_import_module(self, mock_import):
         util.import_module('test')
-        mock_import.assert_called_once_with('test/mod')
+        mock_import.module_from_spec.assert_called()
 
-    @patch('importlib.import_module')
+    @patch('importlib.util')
     def test_import_module_missing_module(self, mock_import):
-        def raise_err(*_):
-            ex = ModuleNotFoundError(name='test')
-            raise ex
-        mock_import.side_effect = raise_err
+        mock_import.module_from_spec.side_effect = ModuleNotFoundError(name='test')
 
         with self.assertRaises(ModuleNotFoundError):
             util.import_module('test')
@@ -103,10 +90,6 @@ class TestUtil(TestCase):
     def test_list_modules(self):
         ret = util.list_modules()
         self.assertEqual([], ret)
-
-    def test_kill_execution(self):
-        ret = util.kill_execution()
-        self.assertEqual(ret, -1)
 
     def test_get_file_content(self):
         tmp_file = "/tmp/test568425j4L.txt"
@@ -137,4 +120,3 @@ class TestUtil(TestCase):
         with patch('os.path.isdir', return_value=False):
             with self.assertRaises(Exception):
                 dir_test.validate('test')
-
