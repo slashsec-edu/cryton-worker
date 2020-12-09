@@ -14,6 +14,7 @@ class CliTest(TestCase):
         self.assertEqual(0, result.exit_code)
 
     @patch('cryton_worker.lib.worker.start', Mock())
+    @patch('cryton_worker.lib.worker.install_modules_requirements', Mock())
     def test_start(self):
-        result = self.runner.invoke(cli, ['start'])
+        result = self.runner.invoke(cli, ['start', '--install-requirements'])
         self.assertEqual(0, result.exit_code)

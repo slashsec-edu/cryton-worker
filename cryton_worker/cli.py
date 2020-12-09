@@ -28,22 +28,24 @@ def cli() -> None:
               help='Rabbit server port.')
 @click.option('-p', '--prefix', type=click.STRING, default=config.RABBIT_WORKER_PREFIX, show_default=True,
               help='What prefix should the Worker use.')
-@click.option('-cc', '--core-count', type=click.INT, default=config.CORE_COUNT, show_default=True,
-              help='How many processes to use for queues.')
+@click.option('-cc', '--consumer-count', type=click.INT, default=config.CONSUMER_COUNT, show_default=True,
+              help='How many consumers to use for queues.')
 @click.option('-mr', '--max-retries', type=click.INT, default=3, show_default=True,
               help='How many times to try to connect.')
-def start_worker(install_requirements: bool, rabbit_username: str, rabbit_password: str,
-                 rabbit_host: str, rabbit_port: int, prefix: str, core_count: int, max_retries: int) -> None:
+@click.option('-P', '--persistent', is_flag=True, help='If Worker should stay alive and keep on trying forever.')
+def start_worker(install_requirements: bool, rabbit_username: str, rabbit_password: str, persistent: bool,
+                 rabbit_host: str, rabbit_port: int, prefix: str, consumer_count: int, max_retries: int) -> None:
     """
     Start worker and try to connect to Rabbit server
 
     \f
-    :param core_count: How many processes to use for queues
+    :param consumer_count: How many consumers to use for queues
     :param prefix: What prefix should the Worker use
     :param rabbit_port: Rabbit server port
     :param rabbit_host: Rabbit server host
     :param rabbit_password: Rabbit login username
     :param rabbit_username: Rabbit login password
+    :param persistent: Keep Worker alive and keep on trying forever
     :param max_retries: How many times to try to connect
     :param install_requirements: Install Python requirements from each requirements.txt in modules_dir
     :return: None
@@ -51,4 +53,5 @@ def start_worker(install_requirements: bool, rabbit_username: str, rabbit_passwo
     if install_requirements:
         worker.install_modules_requirements()
 
-    worker.start(rabbit_host, rabbit_port, rabbit_username, rabbit_password, prefix, core_count, max_retries)
+    worker.start(rabbit_host, rabbit_port, rabbit_username, rabbit_password, prefix, consumer_count, max_retries,
+                 persistent)
