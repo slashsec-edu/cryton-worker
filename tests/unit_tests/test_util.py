@@ -72,7 +72,10 @@ class TestUtil(TestCase):
 
     @patch('importlib.util')
     def test_import_module_missing_module(self, mock_import):
-        mock_import.module_from_spec.side_effect = ModuleNotFoundError(name='test')
+        def raise_err(*_):
+            ex = ModuleNotFoundError(name='test')
+            raise ex
+        mock_import.module_from_spec.side_effect = raise_err
 
         with self.assertRaises(ModuleNotFoundError):
             util.import_module('test')
