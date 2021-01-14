@@ -10,4 +10,4 @@ services:
     volumes:
       - ${CRYTON_WORKER_MODULES_DIR}:${CRYTON_WORKER_MODULES_DIR}
       - /dev/log:/dev/log
-    entrypoint: ["cryton-worker"]
+    entrypoint: ["cryton-worker", "start", "--install-requirements"]

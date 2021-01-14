@@ -42,7 +42,6 @@ def execute_module(relative_path: str, arguments: dict) -> dict:
             raise TypeError('Cannot parse type "{}" of data in "file"'.format(type(file_contents)))
 
     logger.logger.info("Module execution finished", module_name=relative_path, arguments=arguments, ret=ret)
-
     return ret
 
 
@@ -102,7 +101,6 @@ def validate_module(module_path: str, arguments: dict) -> dict:
                                                                                                          ex)}
 
     logger.logger.info("Module validation finished", module_name=module_path, arguments=arguments, ret=ret)
-
     return ret
 
 
