@@ -1,261 +1,160 @@
 from unittest import TestCase
 from mock import patch, Mock
 
-from cryton_worker.lib import worker, util
-import amqpstorm
-import subprocess
+from cryton_worker.lib import worker
+from cryton_worker.lib.util import constants as co, logger, util
 
 
-class TestWorkerFunctions(TestCase):
-
-    @patch('cryton_worker.lib.util.execute_module', Mock())
-    @patch('json.dumps')
-    @patch('json.loads')
-    def test_callback_action(self, mock_loads, mock_dumps):
-        mock_loads.return_value = {"test": "test"}
-        mock_dumps.return_value = {"test": "test"}
-        mock_msg = Mock()
-        mock_util = util
-        mock_util.execute_module = Mock()
-
-        worker.callback_attack(mock_msg)
-        mock_util.execute_module.assert_called()
-
-    @patch('cryton_worker.lib.event.kill_execution', Mock(return_value={'return_code': 0}))
-    @patch('cryton_worker.lib.event.validate_module', Mock(return_value={'return_code': 0}))
-    @patch('cryton_worker.lib.event.list_modules', Mock(return_value={'return_code': 0}))
-    @patch('cryton_worker.lib.event.list_sessions', Mock(return_value={'return_code': 0}))
-    @patch('cryton_worker.lib.event.health_check', Mock(return_value={'return_code': 0}))
-    def test_callback_control(self):
-        ret = worker.callback_control({'event_t': 'KILL_EXECUTION'})
-        self.assertEqual(ret.get('event_v'), {'return_code': 0})
-
-        ret = worker.callback_control({'event_t': 'VALIDATE_MODULE'})
-        self.assertEqual(ret.get('event_v'), {'return_code': 0})
-
-        ret = worker.callback_control({'event_t': 'LIST_MODULES'})
-        self.assertEqual(ret.get('event_v'), {'return_code': 0})
-
-        ret = worker.callback_control({'event_t': 'LIST_SESSIONS'})
-        self.assertEqual(ret.get('event_v'), {'return_code': 0})
-
-        ret = worker.callback_control({'event_t': 'HEALTHCHECK'})
-        self.assertEqual(ret.get('event_v'), {'return_code': 0})
-
-        ret = worker.callback_control({'event_t': 'UNKNOWN'})
-        self.assertEqual(ret.get('event_v'), {'return_code': -2})
-
-    @patch('cryton_worker.lib.worker.install_modules_requirements', Mock())
-    @patch('cryton_worker.lib.worker.Worker')
-    def test_start(self, mock_worker):
-        mock_worker.side_effect = Mock()
-
-        worker.start('', 1, '', '', '', 1, 1, False)
-        mock_worker.assert_called_once()
-
-    @patch('cryton_worker.lib.worker.os.walk')
-    def test_install_modules_requirements(self, mock_walk):
-        mock_subprocess = subprocess
-        mock_subprocess.check_call = Mock()
-        mock_walk.return_value = [('.', '.', ['requirements.txt'])]
-
-        worker.install_modules_requirements()
-        mock_subprocess.check_call.assert_called_once()
-
-
-class TestTask(TestCase):
-    def setUp(self):
-        self.channel = Mock()
-        self.msg_body = '{"var": "val"}'
-        self.request_queue = Mock()
-        self.task = worker.Task(amqpstorm.message.Message.create(self.channel, self.msg_body),
-                                self.request_queue)
-
-    @patch('cryton_worker.lib.worker.amqpstorm.message.Message.ack', Mock())
-    def test__call__(self):
-        self.assertIsNone(self.task())
-
-    @patch('cryton_worker.lib.worker.callback_attack')
-    @patch('cryton_worker.lib.worker.callback_control')
-    def test__decide_callback(self, mock_control: Mock, mock_attack: Mock):
-        mock_attack.return_value = {'test': 'test'}
-        ret = self.task._decide_callback({'attack_module': 'test'})
-        mock_attack.assert_called_once()
-        self.assertEqual(ret, {'test': 'test'})
-
-        mock_control.return_value = {'test': 'test'}
-        ret = self.task._decide_callback({'event_t': 'test'})
-        mock_control.assert_called_once()
-        self.assertEqual(ret, {'test': 'test'})
-
-        ret = self.task._decide_callback({})
-        self.assertEqual(ret, {'err': 'Unknown request, \'attack_module\' or \'event_t\' must be defined.'})
-
-    @patch('amqpstorm.Message.create')
-    def test_send_response(self, mock_create):
-        self.task.send_response('test')
-        mock_create.assert_called_once()
-
-
+@patch("cryton_worker.lib.util.logger.logger", logger.structlog.getLogger("cryton-worker-debug"))
 class TestWorker(TestCase):
     def setUp(self):
-        self.custom_queue = 'test'
-        self.custom_callback = Mock()
-        self.worker = worker.Worker('', 1, '', '', 1, ('q1', 'q2'))
-        self.worker.req_queue = Mock()
+        self.mock_main_queue = Mock()
+        self.worker_obj = worker.Worker("host", 1, "user", "pass", "prefix", 3, 3, 3, False)
+        self.worker_obj._main_queue = self.mock_main_queue
 
-    def test_init_with_zero_consumers(self):
-        worker_obj = worker.Worker('', 1, '', '', 0, ('q1', 'q2'))
-        self.assertIsInstance(worker_obj, worker.Worker)
-        self.assertEqual(worker_obj.consumer_count, 1)
+    def test_init_wrong_consumers(self):
+        worker_obj = worker.Worker("host", 1, "user", "pass", "prefix", 3, 0, 3, False)
+        self.assertEqual(worker_obj._processor_count, 1)
 
-    @patch('cryton_worker.lib.worker.Worker._update_connection', Mock(return_value=True))
-    @patch('cryton_worker.lib.worker.Worker._update_consumers', Mock())
-    @patch('cryton_worker.lib.worker.Worker._process_pipe')
-    def test_start_keyboard_interrupt(self, mock_pipe: Mock):
-        mock_pipe.side_effect = KeyboardInterrupt
+    @patch("cryton_worker.lib.worker.Worker._start_consumer", Mock())
+    @patch("cryton_worker.lib.worker.Worker._start_threaded_processors", Mock())
+    @patch("cryton_worker.lib.worker.Worker.stop")
+    @patch("cryton_worker.lib.worker.time.sleep")
+    def test_start(self, mock_sleep, mock_stop):
+        mock_sleep.side_effect = KeyboardInterrupt
+        self.worker_obj.start()
+        mock_stop.assert_called_once()
 
-        self.worker.start()
+    @patch("cryton_worker.lib.worker.Worker._stop_threaded_processors", Mock())
+    @patch("cryton_worker.lib.worker.Worker._stop_triggers", Mock())
+    @patch("cryton_worker.lib.consumer.Consumer.stop", Mock())
+    def test_stop(self):
+        self.worker_obj.stop()
+        self.assertTrue(self.worker_obj._stopped)
 
-    @patch('cryton_worker.lib.worker.Worker._update_connection', Mock(return_value=True))
-    @patch('cryton_worker.lib.worker.Worker._update_consumers', Mock())
-    @patch('cryton_worker.lib.worker.Worker._process_pipe')
-    def test_start_conn_err(self, mock_pipe: Mock):
-        mock_pipe.side_effect = amqpstorm.AMQPConnectionError
-
-        self.worker.start()
-
-    @patch('cryton_worker.lib.worker.Worker._create_connection')
-    def test__update_connection(self, mock_create_conn: Mock):
-        ret = self.worker._update_connection()
-        self.assertTrue(ret)
-        mock_create_conn.assert_called_once()
-
-        self.worker._connection = Mock()
-        self.worker._connection.is_open = True
-        ret = self.worker._update_connection()
-        self.assertFalse(ret)
-
-        self.worker._connection = Mock()
-        self.worker._connection.is_open = False
-        ret = self.worker._update_connection()
-        self.assertTrue(ret)
-
-    @patch('threading.Thread', Mock())
-    @patch('threading.Thread.start')
-    def test__update_consumers(self, mock_start: Mock):
-        self.worker._update_consumers()
-
+    @patch("threading.Thread", Mock())
+    @patch("threading.Thread.start")
+    def test__start_threaded_processors(self, mock_start):
+        self.worker_obj._start_threaded_processors()
         mock_start.assert_called()
 
-    @patch('cryton_worker.lib.worker.Worker._kill')
-    def test__process_pipe_kill(self, mock_kill: Mock):
-        mock_kill.return_value = (0, '')
+    def test__stop_threaded_processors(self):
+        self.worker_obj._stop_threaded_processors()
+        self.mock_main_queue.put.assert_called()
+
+    @patch("threading.Thread", Mock())
+    @patch("threading.Thread.start")
+    def test__start_consumer(self, mock_start):
+        self.worker_obj._start_consumer()
+        mock_start.assert_called()
+
+    def test__stop_triggers(self):
+        mock_trigger_obj = Mock()
+        self.worker_obj._triggers.append(mock_trigger_obj)
+        self.worker_obj._stop_triggers()
+        mock_trigger_obj.stop.assert_called_once()
+
+    def test__threaded_processor_action_shutdown(self):
+        self.mock_main_queue.get.return_value = util.PrioritizedItem(0,
+                                                                     {co.ACTION: co.ACTION_SHUTDOWN_THREADED_PROCESSOR})
+        self.worker_obj._threaded_processor(1)
+
+    def test__threaded_processor_action_unknown(self):
+        self.mock_main_queue.get.return_value = util.PrioritizedItem(0, {co.ACTION: "UNKNOWN"})
+        with self.assertLogs("cryton-worker-debug", level="WARNING") as cm:
+            with self.assertRaises(KeyError):
+                self.worker_obj._threaded_processor(1)
+        self.assertIn("Request contains unknown action.", cm.output[0])
+
+    @patch("cryton_worker.lib.worker.Worker._stop_threaded_processors")
+    def test__threaded_processor_action_exception(self, mock_action):
+        mock_action.side_effect = RuntimeError
+        self.mock_main_queue.get.return_value = util.PrioritizedItem(0, {co.ACTION: co.ACTION_SEND_MESSAGE})
+        with self.assertLogs("cryton-worker-debug", level="WARNING") as cm:
+            with self.assertRaises(KeyError):
+                self.worker_obj._threaded_processor(1)
+        self.assertIn("Request threw an exception in the process.", cm.output[0])
+
+    @patch("cryton_worker.lib.consumer.Consumer.pop_task", Mock())
+    def test__kill_task(self):
         mock_pipe = Mock()
-        self.worker.req_queue.get.return_value = ('KILL', mock_pipe, '1')
+        self.worker_obj._kill_task({co.RESULT_PIPE: mock_pipe, co.CORRELATION_ID: "1"})
+        mock_pipe.send.assert_called_once_with({co.RETURN_CODE: co.CODE_OK})
 
-        self.worker._process_pipe()
+    @patch("cryton_worker.lib.consumer.Consumer.pop_task")
+    def test__kill_task_error(self, mock_pop_task):
+        mock_task = Mock()
+        mock_task.kill.side_effect = RuntimeError
+        mock_pop_task.return_value = mock_task
+        mock_pipe = Mock()
+        self.worker_obj._kill_task({co.RESULT_PIPE: mock_pipe, co.CORRELATION_ID: "1"})
+        mock_pipe.send.assert_called_once_with({co.RETURN_CODE: co.CODE_ERROR, co.STD_ERR: ""})
 
-        mock_pipe.send.assert_called_once_with((0, ''))
+    @patch("cryton_worker.lib.consumer.Consumer.pop_task")
+    def test__kill_task_not_found(self, mock_pop_task):
+        mock_pop_task.return_value = None
+        mock_pipe = Mock()
+        self.worker_obj._kill_task({co.RESULT_PIPE: mock_pipe, co.CORRELATION_ID: "1"})
+        mock_pipe.send.assert_called_once_with({co.RETURN_CODE: co.CODE_ERROR, co.STD_ERR: "Couldn't find the Task."})
 
-    def test__process_pipe_free(self):
-        mock_task, mock_task_process = Mock(), Mock()
-        mock_task.correlation_id = '1'
-        self.worker._tasks.update({mock_task: mock_task_process})
-        self.worker.req_queue.get.return_value = ('FREE', mock_task.correlation_id, '')
+    @patch("cryton_worker.lib.consumer.Consumer.pop_task")
+    def test__finish_task(self, mock_pop_task):
+        self.worker_obj._finish_task({co.CORRELATION_ID: "1", co.DATA: ""})
+        mock_pop_task.assert_called_once()
 
-        self.worker._process_pipe()
+    @patch("cryton_worker.lib.consumer.Consumer.send_message")
+    def test__send_message(self, mock_send_message):
+        self.worker_obj._send_message({co.QUEUE_NAME: "", co.DATA: "", co.PROPERTIES: {}})
+        mock_send_message.assert_called_once()
 
-        self.assertEqual(self.worker._tasks, {})
+    @patch("cryton_worker.lib.triggers.HTTPTrigger.add_activator", Mock())
+    def test__start_trigger_new(self):
+        mock_pipe = Mock()
+        self.worker_obj._start_trigger({co.RESULT_PIPE: mock_pipe,
+                                        co.DATA: {co.T_HOST: "", co.T_PORT: "", co.T_TYPE: "HTTP"}})
+        mock_pipe.send.assert_called_once_with({co.RETURN_CODE: co.CODE_OK})
 
-    def test__process_pipe_errors(self):
-        self.worker.req_queue.get.return_value = ('UNKNOWN',)
-        self.worker._process_pipe()
+    @patch("cryton_worker.lib.triggers.HTTPTrigger.add_activator", Mock())
+    def test__start_trigger_existing(self):
+        mock_trigger_obj = Mock()
+        mock_trigger_obj.compare_identifiers.return_value = True
+        mock_pipe = Mock()
+        self.worker_obj._triggers.append(mock_trigger_obj)
+        self.worker_obj._start_trigger(
+            {co.RESULT_PIPE: mock_pipe, co.DATA: {co.T_HOST: "", co.T_PORT: "", co.T_TYPE: "HTTP"}})
+        mock_pipe.send.assert_called_once_with({co.RETURN_CODE: co.CODE_OK})
 
-        self.worker.req_queue.get.side_effect = Exception
-        self.worker._process_pipe()
+    @patch("cryton_worker.lib.triggers.HTTPTrigger.add_activator")
+    def test__start_trigger_error(self, mock_add_activator):
+        mock_add_activator.side_effect = RuntimeError
+        mock_pipe = Mock()
+        self.worker_obj._start_trigger(
+            {co.RESULT_PIPE: mock_pipe, co.DATA: {co.T_HOST: "", co.T_PORT: "", co.T_TYPE: "HTTP"}})
+        mock_pipe.send.assert_called_once_with({co.RETURN_CODE: co.CODE_ERROR, co.STD_ERR: ""})
 
-    def test_consumer(self):
-        mock_connection, mock_channel = Mock(), Mock()
-        mock_connection.channel.return_value = mock_channel
-        self.worker._connection = mock_connection
+    def test__stop_trigger_exists(self):
+        mock_trigger_obj = Mock()
+        mock_trigger_obj.compare_identifiers.return_value = True
+        mock_trigger_obj.any_activator_exists.return_value = False
+        mock_trigger_obj.remove_activator.return_value = None
+        mock_pipe = Mock()
+        self.worker_obj._triggers.append(mock_trigger_obj)
+        self.worker_obj._stop_trigger({co.RESULT_PIPE: mock_pipe,
+                                       co.DATA: {co.T_HOST: "", co.T_PORT: "", co.T_TYPE: "HTTP"}})
+        mock_pipe.send.assert_called_once_with({co.RETURN_CODE: co.CODE_OK})
 
-        self.worker.consumer()
+    def test__stop_trigger_exists_error(self):
+        mock_trigger_obj = Mock()
+        mock_trigger_obj.compare_identifiers.return_value = True
+        mock_trigger_obj.remove_activator.side_effect = RuntimeError
+        mock_pipe = Mock()
+        self.worker_obj._triggers.append(mock_trigger_obj)
+        self.worker_obj._stop_trigger({co.RESULT_PIPE: mock_pipe,
+                                       co.DATA: {co.T_HOST: "", co.T_PORT: "", co.T_TYPE: "HTTP"}})
+        mock_pipe.send.assert_called_once_with({co.RETURN_CODE: co.CODE_ERROR, co.STD_ERR: ""})
 
-        mock_channel.start_consuming.assert_called()
-
-    @patch('cryton_worker.lib.worker.Task', Mock())
-    @patch('multiprocessing.Process', Mock())
-    @patch('multiprocessing.Process.start')
-    def test__process_callback(self, mock_start: Mock):
-        msg = amqpstorm.message.Message.create(Mock(), Mock())
-
-        self.worker._process_callback(msg)
-
-        mock_start.assert_called_once()
-
-    def test_stop(self):
-        mock_task, mock_task_process = Mock(), Mock()
-        mock_connection, mock_channel = Mock(), Mock()
-        mock_connection.channels = {1: mock_channel}
-        self.worker._connection = mock_connection
-        self.worker._tasks.update({mock_task: mock_task_process})
-
-        self.worker.stop()
-
-        mock_task_process.join.assert_called_once()
-        mock_connection.close.assert_called_once()
-        mock_channel.close.assert_called_once()
-
-    def test_stop_keyboard_interrupt(self):
-        mock_task1, mock_task_process1 = Mock(), Mock()
-        mock_task2, mock_task_process2 = Mock(), Mock()
-        mock_task_process1.join.side_effect = KeyboardInterrupt
-        mock_task_process2.join.side_effect = KeyboardInterrupt
-        mock_connection, mock_channel = Mock(), Mock()
-        mock_connection.channels = {1: mock_channel}
-        self.worker._connection = mock_connection
-        self.worker._tasks.update({mock_task1: mock_task_process1, mock_task2: mock_task_process2})
-
-        self.worker.stop()
-
-        mock_task_process1.kill.assert_called()
-        mock_task_process2.kill.assert_called()
-        mock_connection.close.assert_called_once()
-        mock_channel.close.assert_called_once()
-
-    def test__kill(self):
-        mock_task, mock_task_process = Mock(), Mock()
-        mock_task.correlation_id = '1'
-        self.worker._tasks.update({mock_task: mock_task_process})
-
-        ret = self.worker._kill('1')
-
-        self.assertEqual(ret, (0, ''))
-        mock_task_process.kill.assert_called_once()
-
-    def test__kill_err(self):
-        mock_task, mock_task_process = Mock(), Mock()
-        mock_task_process.kill.side_effect = Exception('ex')
-        mock_task.correlation_id = '1'
-        self.worker._tasks.update({mock_task: mock_task_process})
-
-        ret = self.worker._kill('1')
-
-        self.assertEqual(ret, (-2, 'ex'))
-        mock_task_process.kill.assert_called_once()
-
-    def test__kill_not_found(self):
-        ret = self.worker._kill('1')
-        self.assertEqual(ret, (-1, 'not found'))
-
-    @patch('time.sleep', Mock())
-    @patch('amqpstorm.Connection')
-    def test__create_connection(self, mock_conn: Mock):
-        self.worker._create_connection()
-        mock_conn.assert_called_once()
-
-        mock_conn.side_effect = amqpstorm.AMQPError
-
-        with self.assertRaises(amqpstorm.AMQPConnectionError):
-            self.worker._create_connection()
+    def test__stop_trigger_not_found(self):
+        mock_pipe = Mock()
+        self.worker_obj._stop_trigger({co.RESULT_PIPE: mock_pipe,
+                                       co.DATA: {co.T_HOST: "", co.T_PORT: "", co.T_TYPE: "HTTP"}})
+        mock_pipe.send.assert_called_once_with({co.RETURN_CODE: co.CODE_ERROR, co.STD_ERR: "Trigger not found."})

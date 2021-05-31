@@ -1,390 +1,259 @@
-from typing import Tuple
-from cryton_worker.lib import event, util
-from cryton_worker.etc import config
-from cryton_worker.lib import logger
-import datetime
-import json
-import amqpstorm
-import subprocess
-import os
-import sys
+from typing import List
 from threading import Thread
-from multiprocessing import Process, Queue, Pipe
-from queue import Empty
+from multiprocessing import Lock
 import time
+import traceback
 
-
-class Task:
-    def __init__(self, message: amqpstorm.Message, req_queue: Queue):
-        """
-        Class for processing callbacks.
-        :param message: RabbitMQ Message
-        :param req_queue: Queue for requests
-        """
-        self.message = message
-        self.correlation_id = self.message.correlation_id
-        self.req_queue = req_queue
-
-    def __call__(self) -> None:
-        """
-        Rabbit callback for executing custom callbacks and sending responses.
-        :return: None
-        """
-        self.message.ack()
-        message_body = json.loads(self.message.body)
-        ret = self._decide_callback(message_body)
-        ret_msg = json.dumps(ret)
-
-        self.req_queue.put(('FREE', self.correlation_id, ret_msg))
-
-        return None
-
-    def send_response(self, ret_msg: str) -> None:
-        """
-        Update properties and send message containing response to reply_to.
-        :param ret_msg: Response from callback
-        :return: None
-        """
-        self.message.channel.queue.declare(self.message.reply_to)
-        self.message.properties.update({'content_encoding': 'utf-8'})
-        self.message.properties.update({'timestamp': datetime.datetime.now()})
-
-        response = amqpstorm.Message.create(self.message.channel, ret_msg, self.message.properties)
-        response.publish(self.message.reply_to)
-
-        return None
-
-    def _decide_callback(self, message_body: dict) -> dict:
-        """
-        Decide what callback to run.
-        :param message_body: RabbitMQ Message body
-        :return: Dictionary containing results
-        """
-        if message_body.get('attack_module') is not None:
-            logger.logger.info('Using attack.callback to process the request.', message_content=message_body)
-            ret = callback_attack(message_body)
-
-        elif message_body.get('event_t') is not None:
-            logger.logger.info('Using attack.callback to process the request.', message_content=message_body)
-            res_pipe, req_pipe = Pipe(False)
-            message_body.update({'request_queue': self.req_queue, 'request_pipe': req_pipe, 'response_pipe': res_pipe})
-            ret = callback_control(message_body)
-
-        else:
-            logger.logger.warning('Cannot process the request.', message_content=message_body)
-            ret = {'err': 'Unknown request, \'attack_module\' or \'event_t\' must be defined.'}
-
-        return ret
+from cryton_worker.lib import consumer
+from cryton_worker.lib.util import constants as co, logger, util
+from cryton_worker.lib.triggers import Trigger, TriggerEnum
 
 
 class Worker:
-    def __init__(self, rabbit_host: str, rabbit_port: int, rabbit_username: str, rabbit_password: str,
-                 consumer_count: int, queues: tuple, max_retries: int = 3, persistent: bool = False):
+    def __init__(self, rabbit_host: str, rabbit_port: int, rabbit_username: str, rabbit_password: str, prefix: str,
+                 consumer_count: int, processor_count: int, max_retries: int, persistent: bool):
         """
-        Worker.
+        Worker processes internal requests using self._main_queue and communicates with RabbitMQ server using Consumer.
+        :param rabbit_host: Rabbit's server port
+        :param rabbit_port: Rabbit's server host
+        :param rabbit_username: Rabbit's username
+        :param rabbit_password: Rabbit's password
+        :param prefix: Worker prefix for queues
+        :param consumer_count: How many consumers to use for queues
+        (higher == faster RabbitMQ requests consuming, but heavier processor usage)
+        :param processor_count: How many processors to use for internal requests
+        (higher == more responsive internal requests processing, but heavier processor usage)
+        :param max_retries: How many times to try to connect
+        :param persistent: Keep Worker alive and keep on trying forever (if True)
         """
-        self.hostname = rabbit_host
-        self.port = rabbit_port
-        self.username = rabbit_username
-        self.password = rabbit_password
-        self.max_retries = max_retries
-        self.persistent = persistent
-        self.queues = queues
-
-        if consumer_count <= 0:
-            consumer_count = 1
-
-        self.consumer_count = consumer_count
-        self._tasks = {}
-        self.stopped = False
-        self._connection: amqpstorm.Connection or None = None
-        self.req_queue = Queue()
-        logger.logger.debug(
-            'Worker created.', rabbit_hostname=self.hostname, rabbit_port=self.port, consumer_count=self.consumer_count,
-            max_retries=self.max_retries, queues=self.queues, persistent=self.persistent)
+        self._triggers: List[Trigger] = []
+        self._triggers_lock = Lock()  # Lock to prevent modifying, while performing time consuming actions.
+        self._stopped = False
+        self._main_queue: util.ManagerPriorityQueue = util.get_manager().PriorityQueue()
+        self._processor_count = processor_count if processor_count > 0 else 1
+        self._consumer = consumer.Consumer(self._main_queue, rabbit_host, rabbit_port, rabbit_username, rabbit_password,
+                                           prefix, consumer_count, max_retries, persistent)
 
     def start(self) -> None:
         """
-        Establish connection, start consumers and keep Worker alive.
+        Start Consumer and processors in thread and keep self alive.
         :return: None
         """
-        print('Worker starting.. press CTRL + C to exit')
-        self.stopped = False
-
-        while not self.stopped:
-            try:
-                if self._update_connection():
-                    self._update_consumers()
-                self._process_pipe()  # times out after 5 seconds if there is no input
-            except KeyboardInterrupt:
-                print('Stopping Worker..')
-                self.stop()
-            except amqpstorm.AMQPConnectionError as ex:
-                print(str(ex))
-                if self.persistent:
-                    print('Due to persistent mode, Worker will try to reconnect util manual shutdown.')
-                    continue
-                print('Stopping Worker..')
-                self.stop()
-
-        return None
-
-    def _update_connection(self) -> bool:
-        """
-        Check connection for errors and refresh it.
-        :raises: amqpstorm.AMQPConnectionError if connection cannot be open
-        :return: True if connection was updated
-        """
+        logger.logger.debug("Worker started.", processor_count=self._processor_count, consumer=str(self._consumer))
+        print("Starting..")
+        print("To exit press CTRL+C")
         try:
-            if self._connection is None:
-                raise amqpstorm.AMQPConnectionError('Connection does not exist.')
-            self._connection.check_for_errors()
-            if not self._connection.is_open:
-                connection_error = amqpstorm.AMQPConnectionError('Connection is closed.')
-                print('Connection to RabbitMQ lost.')
-                logger.logger.warning(connection_error)
-                raise connection_error
+            self._start_consumer()
+            self._start_threaded_processors()
+            while not self._stopped and not self._consumer.stopped:  # Keep self alive and check for stops.
+                time.sleep(5)
 
-            return False
-
-        except amqpstorm.AMQPError:
-            self._create_connection()
-
-        return True
-
-    def _update_consumers(self) -> None:
-        """
-        Start consumers.
-        :return: None
-        """
-        for _ in range(self.consumer_count):
-            thread = Thread(target=self.consumer)
-            thread.start()
-
-        return None
-
-    def _process_pipe(self) -> None:
-        """
-        Check for internal requests and process them.
-        :return: None
-        """
-        try:
-            request = self.req_queue.get(timeout=5)  # raises Empty after timeout
-
-            if request[0] == 'KILL':
-                req_type, res_pipe, correlation_id = request
-                ret = self._kill(correlation_id)
-                res_pipe.send(ret)
-
-            elif request[0] == 'FREE':
-                req_type, correlation_id, ret_msg = request
-                task = self._get_task(correlation_id)
-                task.send_response(ret_msg)
-                self._tasks.pop(task)
-
-            else:
-                logger.logger.warning('Unknown request in queue.', request=request)
-
-        except Empty:
+        except KeyboardInterrupt:
             pass
-        except Exception as ex:
-            logger.logger.warning('Error parsing request from queue.', error=str(ex))
-
-        return None
-
-    def consumer(self) -> None:
-        """
-        Start a consumer (balancer) for faster queues consuming.
-        :return: None
-        """
-        channel = self._connection.channel()
-        channel.basic.qos(1)
-        for queue in self.queues:  # consume on each queue
-            channel.queue.declare(queue)
-            channel.basic.consume(self._process_callback, queue)
-        channel.start_consuming()
-
-        return None
-
-    def _process_callback(self, message: amqpstorm.Message) -> None:
-        """
-        Create TaskProcessor for new callback, start it in a Process and save it.
-        :param message: RabbitMQ Message.
-        :return: None
-        """
-        task = Task(message, self.req_queue)
-        process = Process(target=task)
-        process.start()
-        self._tasks.update({task: process})
-
-        return None
-
-    def _get_task(self, correlation_id: str) -> Task or None:
-        """
-        Find a task.
-        :param correlation_id: Task's correlation ID
-        :return: Desired Task or nothing if it doesn't exist
-        """
-        for task in self._tasks.keys():
-            if task.correlation_id is not None and task.correlation_id == correlation_id:
-                return task
-        return None
+        self.stop()
 
     def stop(self) -> None:
         """
-        Stop Worker and it's consumers.
+        Stop Worker (self). Stop Consumer, processors and triggers.
         :return: None
         """
-        self.stopped = True
+        logger.logger.info("Stopping Worker", processor_count=self._processor_count, consumer=str(self._consumer))
+        print("Exiting..")
+        self._consumer.stop()
+        self._stopped = True  # Giving time to self._consumer for proper stop.
+        self._stop_threaded_processors()
+        self._stop_triggers()
 
-        try:
-            print('Waiting for executed modules to finish.. press CTRL + C to kill them.')
-            while len(self._tasks) > 0:
-                task, task_process = self._tasks.popitem()
-                try:
-                    task_process.join()
-                except KeyboardInterrupt:
-                    task_process.kill()
-                    raise KeyboardInterrupt
-
-        except KeyboardInterrupt:
-            print('Forcefully killing executed modules..')
-            while len(self._tasks) > 0:
-                task, task_process = self._tasks.popitem()
-                task_process.kill()
-
-        if self._connection is not None and self._connection.is_open:
-            for channel in list(self._connection.channels.values()):
-                channel.close()
-            self._connection.close()
-
-        return None
-
-    def _kill(self, correlation_id) -> Tuple[int, str]:
+    def _start_threaded_processors(self) -> None:
         """
-        Kill running module execution and send its response.
-        :param correlation_id: Task's correlation ID
-        :return: Tuple containing code and error message
-        """
-        task = self._get_task(correlation_id)
-
-        # if the task doesn't exist
-        if task is None:
-            logger.logger.warning('Couldn\'t find (kill) the task.', task_correlation_id=correlation_id)
-            return -1, 'not found'
-
-        try:
-            self._tasks.pop(task).kill()
-        except Exception as ex:
-            logger.logger.warning('Couldn\'t kill the task.', task_correlation_id=correlation_id)
-            return -2, str(ex)
-
-        # if the task is successfully killed, send a response
-        ret_msg = {'return_code': -3}
-        task.send_response(json.dumps(ret_msg))
-        logger.logger.debug('Successfully killed the task.', task_correlation_id=correlation_id)
-
-        return 0, ''
-
-    def _create_connection(self) -> None:
-        """
-        Create a Rabbit connection.
+        Start processors in thread.
         :return: None
         """
-        attempts = 1
-        while True:
-            attempts += 1
-            if self.stopped:
-                break
+        logger.logger.debug("Starting threaded processors.", processor_count=self._processor_count)
+        for i in range(self._processor_count):
+            thread = Thread(target=self._threaded_processor, kwargs={"thread_id": i + 1}, name=f"Thread-{i}-processor")
+            thread.start()
+
+    def _stop_threaded_processors(self) -> None:
+        """
+        Stop processors by sending shutdown request.
+        :return: None
+        """
+        logger.logger.debug("Stopping threaded processors.", processor_count=self._processor_count)
+        for _ in range(self._processor_count):
+            item = util.PrioritizedItem(co.LOW_PRIORITY, {co.ACTION: co.ACTION_SHUTDOWN_THREADED_PROCESSOR})
+            self._main_queue.put(item)
+
+    def _start_consumer(self) -> None:
+        """
+        Start Consumer in thread.
+        :return: None
+        """
+        logger.logger.debug("Starting self._consumer in Thread.", consumer=str(self._consumer))
+        thread = Thread(target=self._consumer.start)
+        thread.start()
+
+    def _stop_triggers(self) -> None:
+        """
+        Stop all Triggers in self._triggers.
+        :return: None
+        """
+        logger.logger.debug("Stopping all Triggers.")
+        with self._triggers_lock:
+            while len(self._triggers) > 0:
+                trigger_obj = self._triggers.pop(-1)
+                trigger_obj.stop()
+
+    def _threaded_processor(self, thread_id: int) -> None:
+        """
+        Start a processor for request processing.
+        :param thread_id: Fictional thread (processor) ID
+        :return: None
+        """
+        logger.logger.debug("Threaded processor started.", thread_id=thread_id)
+        while not self._stopped:
+            request: util.PrioritizedItem = self._main_queue.get()
+            request_action = request.item.pop(co.ACTION)
+
+            try:  # Try to get method reference.
+                action_callable = getattr(self, request_action)
+            except AttributeError:
+                if request_action == co.ACTION_SHUTDOWN_THREADED_PROCESSOR:
+                    logger.logger.debug("Shutting down threaded processor.", thread_id=thread_id)
+                    break
+                logger.logger.warning("Request contains unknown action.", request=request)
+                continue
+
+            try:  # Try to call method and process the request.
+                action_callable(request.item)
+            except Exception as ex:
+                logger.logger.warning("Request threw an exception in the process.", request=request, error=str(ex))
+                logger.logger.debug("Request threw an exception in the process.", request=request, error=str(ex),
+                                    traceback=traceback.format_exc())
+                continue
+
+        logger.logger.debug("Threaded processor stopped.", thread_id=thread_id)
+
+    def _kill_task(self, request: dict) -> None:
+        """
+        Process; Kill running Task using correlation_id.
+        :param request: Data needed for process (Must contain: co.RESULT_PIPE, co.CORRELATION_ID)
+        :return: None
+        """
+        logger.logger.debug("Calling process _kill_task", request=request)
+        result_pipe = request.pop(co.RESULT_PIPE)
+        correlation_id = request.pop(co.CORRELATION_ID)
+
+        task_obj = self._consumer.pop_task(correlation_id)
+        if task_obj is None:  # Task doesn't exist.
+            err = "Couldn't find the Task."
+            logger.logger.debug(err, task_correlation_id=correlation_id)
+            result = {co.RETURN_CODE: co.CODE_ERROR, co.STD_ERR: err}
+
+        else:  # Task found.
             try:
-                self._connection = amqpstorm.Connection(self.hostname, self.username, self.password, self.port)
-                print('Connection to RabbitMQ established.')
-                break
-            except amqpstorm.AMQPError as ex:
-                logger.logger.warning(ex)
-                if self.max_retries and attempts > self.max_retries:
-                    logger.logger.error('Max number of retries reached.')
-                    raise amqpstorm.AMQPConnectionError('Max number of retries reached.')
-                time.sleep(min(attempts * 2, 30))
+                task_obj.kill()
+                result = {co.RETURN_CODE: co.CODE_OK}
 
-        return None
+            except Exception as ex:
+                logger.logger.debug("Couldn't kill the Task.", task_correlation_id=correlation_id, error=str(ex))
+                result = {co.RETURN_CODE: co.CODE_ERROR, co.STD_ERR: str(ex)}
 
+        result_pipe.send(result)
+        logger.logger.debug("Finished process _kill_task", result=result)
 
-def callback_attack(message_body: dict) -> dict:
-    """
-    Callback function for executing modules.
-    :param message_body: RabbitMQ Message body.
-    :return: Response containing details about the job.
-    """
-    module_name = message_body.get('attack_module')
-    module_arguments = message_body.get('attack_module_arguments')
-    ret = util.execute_module(module_name, module_arguments)
+    def _finish_task(self, request: dict) -> None:
+        """
+        Process; Delete Task from Consumer's Tasks list.
+        :param request: Data needed for process (Must contain: co.CORRELATION_ID)
+        :return: None
+        """
+        logger.logger.debug("Calling process _finish_task", request=request)
+        correlation_id = request.pop(co.CORRELATION_ID)
+        data = request.pop(co.DATA)
 
-    return ret
+        task_obj = self._consumer.pop_task(correlation_id)
+        task_obj.reply(data)
+        logger.logger.debug("Finished process _finish_task")
 
+    def _send_message(self, request: dict) -> None:
+        """
+        Process; Use Consumer to send a message.
+        :param request: Data needed for process (Must contain: co.QUEUE_NAME, co.DATA, co.PROPERTIES)
+        :return: None
+        """
+        logger.logger.debug("Calling process _send_message", request=request)
+        queue_name = request.pop(co.QUEUE_NAME)
+        msg_body = request.pop(co.DATA)
+        msg_properties = request.pop(co.PROPERTIES)
 
-def callback_control(message_body: dict) -> dict:
-    """
-    Callback function for processing control events.
-    :param message_body: RabbitMQ Message body.
-    :return: Response containing details about the job.
-    """
-    event_t = message_body.pop('event_t')
+        msg_properties.update(co.DEFAULT_MSG_PROPERTIES)
+        self._consumer.send_message(queue_name, msg_body, msg_properties)
+        logger.logger.debug("Finished process _send_message")
 
-    if event_t == 'KILL_EXECUTION':
-        event_v = event.kill_execution(message_body)
+    def _start_trigger(self, request: dict) -> None:
+        """
+        Process; Start Trigger.
+        :param request: Data needed for process (Must contain: co.RESULT_PIPE, co.DATA)
+        :return: None
+        """
+        logger.logger.debug("Calling process _start_trigger", request=request)
+        result_pipe = request.pop(co.RESULT_PIPE)
+        data = request.pop(co.DATA)
 
-    elif event_t == 'VALIDATE_MODULE':
-        event_v = event.validate_module(message_body)
+        t_host, t_port, t_type = data.get(co.T_HOST), data.get(co.T_PORT), TriggerEnum[data.get(co.T_TYPE)]
+        with self._triggers_lock:  # Try to find specified Trigger.
+            for trigger_obj in self._triggers:
+                if trigger_obj.compare_identifiers(t_type, t_host, t_port):
+                    logger.logger.debug("Found existing Trigger", host=t_host, port=t_port, type=t_type)
+                    break
+            else:  # If Trigger doesn't exist, create new one.
+                logger.logger.debug("Creating new Trigger", host=t_host, port=t_port, type=t_type)
+                trigger_obj = t_type(t_host, t_port, self._main_queue)
+                self._triggers.append(trigger_obj)
 
-    elif event_t == 'LIST_MODULES':
-        event_v = event.list_modules(message_body)
+        try:  # Add activator for Trigger.
+            trigger_obj.add_activator(data)
+        except Exception as ex:
+            result = {co.RETURN_CODE: co.CODE_ERROR, co.STD_ERR: str(ex)}
+        else:
+            result = {co.RETURN_CODE: co.CODE_OK}
 
-    elif event_t == 'LIST_SESSIONS':
-        event_v = event.list_sessions(message_body)
+        result_pipe.send(result)
+        logger.logger.debug("Finished process _start_trigger", result=result)
 
-    elif event_t == 'HEALTHCHECK':
-        event_v = event.health_check(message_body)
+    def _stop_trigger(self, request: dict) -> None:
+        """
+        Process; Stop Trigger.
+        :param request: Data needed for process (Must contain: co.RESULT_PIPE, co.DATA)
+        :return: None
+        """
+        logger.logger.debug("Calling process _stop_trigger", request=request)
+        result_pipe = request.pop(co.RESULT_PIPE)
+        data = request.pop(co.DATA)
 
-    else:
-        event_v = {'return_code': -2}
+        t_host, t_port, t_type = data.get(co.T_HOST), data.get(co.T_PORT), TriggerEnum[data.get(co.T_TYPE)]
+        with self._triggers_lock:  # Try to find specified Trigger.
+            for trigger_obj in self._triggers:
+                if trigger_obj.compare_identifiers(t_type, t_host, t_port):
+                    logger.logger.debug("Found existing Trigger", host=t_host, port=t_port, type=t_type)
+                    break
+            else:  # If Trigger doesn't exist, create new one.
+                logger.logger.debug("Existing Trigger not found", host=t_host, port=t_port, type=t_type)
+                trigger_obj = None
 
-    return {'event_t': event_t, 'event_v': event_v}
+        try:  # Remove activator from Trigger. Optionally remove it completely.
+            trigger_obj.remove_activator(data)
+            if not trigger_obj.any_activator_exists():
+                with self._triggers_lock:
+                    self._triggers.remove(trigger_obj)
 
+        except AttributeError:
+            result = {co.RETURN_CODE: co.CODE_ERROR, co.STD_ERR: "Trigger not found."}
+        except Exception as ex:
+            result = {co.RETURN_CODE: co.CODE_ERROR, co.STD_ERR: str(ex)}
+        else:
+            result = {co.RETURN_CODE: co.CODE_OK}
 
-def start(rabbit_host: str, rabbit_port: int, rabbit_username: str, rabbit_password: str, prefix: str,
-          consumer_count: int, max_retries: int, persistent: bool) -> None:
-    """
-    Creates Worker which connects to Rabbit server and listens for new messages.
-    :param rabbit_host: Rabbit server host
-    :param rabbit_port: Rabbit server port
-    :param rabbit_username: Rabbit login username
-    :param rabbit_password: Rabbit login password
-    :param prefix: What prefix should the Worker use
-    :param persistent: Keep Worker alive and keep on trying forever
-    :param consumer_count: How many consumers to use for queues
-    :param max_retries: How many times to try to connect
-    :return: None
-    """
-    attack_q = f'cryton_worker.{prefix}.attack.request'
-    control_q = f'cryton_worker.{prefix}.control.request'
-    queues = (attack_q, control_q)
-
-    worker = Worker(rabbit_host, rabbit_port, rabbit_username, rabbit_password, consumer_count, queues, max_retries,
-                    persistent)
-    worker.start()
-
-    return None
-
-
-def install_modules_requirements() -> None:
-    """
-    Go through module directories and install all requirement files.
-    :return: None
-    """
-    for root, dirs, files in os.walk(config.MODULES_DIR):
-        for filename in files:
-            if filename == "requirements.txt":
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", os.path.join(root, filename)])
-
-    return None
+        result_pipe.send(result)
+        logger.logger.debug("Finished process _stop_trigger", result=result)

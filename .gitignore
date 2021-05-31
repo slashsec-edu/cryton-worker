@@ -9,3 +9,5 @@ dist/
 log/
 store.sqlite3
 Pipfile
+.coverage
+htmlcov/
