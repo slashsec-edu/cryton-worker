@@ -2,33 +2,54 @@ from unittest import TestCase
 from mock import patch, Mock
 
 from cryton_worker.lib import event
+from cryton_worker.lib.util import constants as co
 
 
 class TestEvent(TestCase):
-    @patch('cryton_worker.lib.util.validate_module')
-    def test_validate_module(self, mock_util):
-        mock_util.return_value = {'return_code': 0}
-        ret = event.validate_module({'test': 'test'})
-        self.assertEqual({'return_code': 0}, ret)
+    def setUp(self):
+        self.mock_main_queue = Mock()
+        self.mock__response_pipe = Mock()
+        self.mock__request_pipe = Mock()
 
-    @patch('cryton_worker.lib.util.list_modules')
-    def test_list_modules(self, mock_util):
-        mock_util.return_value = 0
-        ret = event.list_modules({'test': 'test'})
-        self.assertEqual({'module_list': 0}, ret)
+        with patch("cryton_worker.lib.event.Pipe") as mocked_pipe:
+            mocked_pipe.return_value = self.mock__response_pipe, self.mock__request_pipe
+            self.event_obj = event.Event({}, self.mock_main_queue)
 
-    @patch('cryton_worker.lib.util.list_sessions')
-    def test_list_sessions(self, mock_util):
-        mock_util.return_value = 0
-        ret = event.list_sessions({'test': 'test'})
-        self.assertEqual({'session_list': 0}, ret)
+    @patch("cryton_worker.lib.util.util.validate_module")
+    def test_validate_module(self, mock_validate):
+        mock_validate.return_value = {co.RETURN_CODE: co.CODE_OK}
+        result = self.event_obj.validate_module()
+        self.assertEqual({co.RETURN_CODE: co.CODE_OK}, result)
 
-    def test_kill_execution(self):
-        mock_pipe = Mock()
-        mock_pipe.recv.return_value = (0, '')
-        ret = event.kill_execution({'test': 'test', 'request_queue': Mock(), 'response_pipe': mock_pipe})
-        self.assertEqual({'return_code': 0, 'std_err': ''}, ret)
+    @patch("cryton_worker.lib.util.util.list_modules")
+    def test_list_modules(self, mock_list_modules):
+        module_list = ["mod"]
+        mock_list_modules.return_value = module_list
+        result = self.event_obj.list_modules()
+        self.assertEqual({co.MODULE_LIST: module_list}, result)
+
+    @patch("cryton_worker.lib.util.util.Metasploit")
+    def test_list_sessions(self, mock_sessions):
+        session_list = ["session"]
+        mock_sessions.return_value.get_target_sessions.return_value = session_list
+        result = self.event_obj.list_sessions()
+        self.assertEqual({co.SESSION_LIST: session_list}, result)
+
+    def test_kill_step_execution(self):
+        self.mock__response_pipe.recv.return_value = {co.RETURN_CODE: co.CODE_OK}
+        result = self.event_obj.kill_step_execution()
+        self.assertEqual({co.RETURN_CODE: co.CODE_OK}, result)
 
     def test_health_check(self):
-        ret = event.health_check({'test': 'test'})
-        self.assertEqual({'return_code': 0}, ret)
+        result = self.event_obj.health_check()
+        self.assertEqual({co.RETURN_CODE: co.CODE_OK}, result)
+
+    def test_start_trigger(self):
+        self.mock__response_pipe.recv.return_value = {co.RETURN_CODE: co.CODE_OK}
+        result = self.event_obj.start_trigger()
+        self.assertEqual({co.RETURN_CODE: co.CODE_OK}, result)
+
+    def test_stop_trigger(self):
+        self.mock__response_pipe.recv.return_value = {co.RETURN_CODE: co.CODE_OK}
+        result = self.event_obj.stop_trigger()
+        self.assertEqual({co.RETURN_CODE: co.CODE_OK}, result)

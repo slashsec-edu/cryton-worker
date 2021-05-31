@@ -4,7 +4,7 @@ with open('requirements.txt') as f:
     requirements = f.read().splitlines()
 
 setup(name='cryton_worker',
-      version='2020.4.1',
+      version='2021.2.1',
       description='Cryton Worker - Attack scenario automation toolset',
       url='https://gitlab.ics.muni.cz/beast-public/cryton/cryton-worker',
       author='Ivo Nutar, Jiri Raja, Andrej Tomci',
@@ -17,9 +17,5 @@ setup(name='cryton_worker',
               'cryton-worker=cryton_worker.cli:cli'
           ]
       },
-      zip_safe=False,
-      data_files=[
-            ('/etc/cryton/', []),
-            ('/etc/cryton', ['cryton_worker/etc/config-worker.ini']),
-            ('/etc/cryton', ['cryton_worker/etc/logging_config_worker.yaml']),
-      ])
+      zip_safe=False
+      )

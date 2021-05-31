@@ -1,7 +1,9 @@
 import structlog
 import logging.config
-from cryton_worker.etc import config
 import yaml
+
+from cryton_worker.etc import config
+from cryton_worker.lib.util import constants
 
 """
 Default Cryton logger setup and configuration
@@ -25,13 +27,20 @@ structlog.configure(
     cache_logger_on_first_use=True,
 )
 
-with open(config.LOG_CONFIG, 'rt') as f:
-    config_file = yaml.safe_load(f.read())
+try:
+    with open(config.LOG_CONFIG, "rt") as f:
+        config_file = yaml.safe_load(f.read())
+except (AttributeError, FileNotFoundError):
+    config_file = yaml.safe_load(constants.DEFAULT_LOG_CONFIG)
 logging.config.dictConfig(config_file)
+
+amqpstorm_logger = logging.getLogger("amqpstorm")
 
 if config.DEBUG:
     logger = structlog.get_logger("cryton-worker-debug")
     logger.setLevel(logging.DEBUG)
+    amqpstorm_logger.propagate = True
 else:
     logger = structlog.get_logger("cryton-worker")
     logger.setLevel(logging.INFO)
+    amqpstorm_logger.propagate = False
