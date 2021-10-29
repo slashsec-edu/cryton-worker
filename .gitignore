@@ -1,13 +1,13 @@
-__pycache__/
-*.py[cod]
-*$py.class
+# Development environment
 .idea/
+.pytest_cache
+__pycache__
 *.egg-info
-reports/
-build/
-dist/
-log/
-store.sqlite3
-Pipfile
+build
+dist
+Pipfile*
+
+# Tests coverage
+htmlcov
 .coverage
-htmlcov/
+.coverage.*

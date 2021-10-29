@@ -1,8 +1,9 @@
 from enum import Enum, EnumMeta
 
 from cryton_worker.lib.util import exceptions
-from cryton_worker.lib.triggers.base_trigger import Trigger
-from cryton_worker.lib.triggers.http_trigger import HTTPTrigger
+from cryton_worker.lib.triggers.trigger_base import Trigger
+from cryton_worker.lib.triggers.trigger_http import HTTPTrigger
+from cryton_worker.lib.triggers.trigger_msf import MSFTrigger
 
 
 class TriggerTypeMeta(EnumMeta):
@@ -21,3 +22,4 @@ class TriggerEnum(Enum, metaclass=TriggerTypeMeta):
     Keys according to lib.util.constants
     """
     HTTP = HTTPTrigger
+    MSF = MSFTrigger

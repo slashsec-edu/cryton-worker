@@ -2,7 +2,7 @@ from unittest import TestCase
 from mock import patch, Mock
 
 from cryton_worker.lib import worker
-from cryton_worker.lib.util import constants as co, logger, util
+from cryton_worker.lib.util import constants as co, logger, util, exceptions
 
 
 @patch("cryton_worker.lib.util.logger.logger", logger.structlog.getLogger("cryton-worker-debug"))
@@ -20,6 +20,7 @@ class TestWorker(TestCase):
     @patch("cryton_worker.lib.worker.Worker._start_threaded_processors", Mock())
     @patch("cryton_worker.lib.worker.Worker.stop")
     @patch("cryton_worker.lib.worker.time.sleep")
+    @patch("cryton_worker.lib.util.util.Metasploit", Mock())
     def test_start(self, mock_sleep, mock_stop):
         mock_sleep.side_effect = KeyboardInterrupt
         self.worker_obj.start()
@@ -55,24 +56,38 @@ class TestWorker(TestCase):
         mock_trigger_obj.stop.assert_called_once()
 
     def test__threaded_processor_action_shutdown(self):
-        self.mock_main_queue.get.return_value = util.PrioritizedItem(0,
-                                                                     {co.ACTION: co.ACTION_SHUTDOWN_THREADED_PROCESSOR})
+        self.mock_main_queue.get.side_effect = [
+            util.PrioritizedItem(0, {co.ACTION: co.ACTION_SHUTDOWN_THREADED_PROCESSOR})
+        ]
         self.worker_obj._threaded_processor(1)
 
     def test__threaded_processor_action_unknown(self):
-        self.mock_main_queue.get.return_value = util.PrioritizedItem(0, {co.ACTION: "UNKNOWN"})
+        self.mock_main_queue.get.side_effect = [
+            util.PrioritizedItem(0, {co.ACTION: "UNKNOWN"}),
+            util.PrioritizedItem(0, {co.ACTION: co.ACTION_SHUTDOWN_THREADED_PROCESSOR})
+        ]
         with self.assertLogs("cryton-worker-debug", level="WARNING") as cm:
-            with self.assertRaises(KeyError):
-                self.worker_obj._threaded_processor(1)
+            self.worker_obj._threaded_processor(1)
         self.assertIn("Request contains unknown action.", cm.output[0])
+
+    def test__threaded_processor_empty_action(self):
+        self.mock_main_queue.get.side_effect = [
+            util.PrioritizedItem(0, {}),
+            util.PrioritizedItem(0, {co.ACTION: co.ACTION_SHUTDOWN_THREADED_PROCESSOR})
+        ]
+        with self.assertLogs("cryton-worker-debug", level="WARNING") as cm:
+            self.worker_obj._threaded_processor(1)
+        self.assertIn("Request doesn't contain action.", cm.output[0])
 
     @patch("cryton_worker.lib.worker.Worker._stop_threaded_processors")
     def test__threaded_processor_action_exception(self, mock_action):
+        self.mock_main_queue.get.side_effect = [
+            util.PrioritizedItem(0, {co.ACTION: co.ACTION_SEND_MESSAGE}),
+            util.PrioritizedItem(0, {co.ACTION: co.ACTION_SHUTDOWN_THREADED_PROCESSOR})
+        ]
         mock_action.side_effect = RuntimeError
-        self.mock_main_queue.get.return_value = util.PrioritizedItem(0, {co.ACTION: co.ACTION_SEND_MESSAGE})
         with self.assertLogs("cryton-worker-debug", level="WARNING") as cm:
-            with self.assertRaises(KeyError):
-                self.worker_obj._threaded_processor(1)
+            self.worker_obj._threaded_processor(1)
         self.assertIn("Request threw an exception in the process.", cm.output[0])
 
     @patch("cryton_worker.lib.consumer.Consumer.pop_task", Mock())
@@ -107,30 +122,36 @@ class TestWorker(TestCase):
         self.worker_obj._send_message({co.QUEUE_NAME: "", co.DATA: "", co.PROPERTIES: {}})
         mock_send_message.assert_called_once()
 
-    @patch("cryton_worker.lib.triggers.HTTPTrigger.add_activator", Mock())
-    def test__start_trigger_new(self):
+    @patch("cryton_worker.lib.triggers.HTTPTrigger.add_activator")
+    def test__start_trigger_new(self, mock_add_activator):
         mock_pipe = Mock()
+        test_id = "test_id"
+        mock_add_activator.return_value = test_id
         self.worker_obj._start_trigger({co.RESULT_PIPE: mock_pipe,
-                                        co.DATA: {co.T_HOST: "", co.T_PORT: "", co.T_TYPE: "HTTP"}})
-        mock_pipe.send.assert_called_once_with({co.RETURN_CODE: co.CODE_OK})
+                                        co.DATA: {co.TRIGGER_HOST: "", co.TRIGGER_PORT: "", co.TRIGGER_TYPE: "HTTP"}})
+        mock_pipe.send.assert_called_once_with({co.RETURN_CODE: co.CODE_OK, co.TRIGGER_ID: test_id})
 
-    @patch("cryton_worker.lib.triggers.HTTPTrigger.add_activator", Mock())
     def test__start_trigger_existing(self):
         mock_trigger_obj = Mock()
+        test_id = "test_id"
         mock_trigger_obj.compare_identifiers.return_value = True
+        mock_trigger_obj.add_activator.return_value = test_id
         mock_pipe = Mock()
         self.worker_obj._triggers.append(mock_trigger_obj)
         self.worker_obj._start_trigger(
-            {co.RESULT_PIPE: mock_pipe, co.DATA: {co.T_HOST: "", co.T_PORT: "", co.T_TYPE: "HTTP"}})
-        mock_pipe.send.assert_called_once_with({co.RETURN_CODE: co.CODE_OK})
+            {co.RESULT_PIPE: mock_pipe, co.DATA: {co.TRIGGER_HOST: "", co.TRIGGER_PORT: "", co.TRIGGER_TYPE: "HTTP"}})
+        mock_pipe.send.assert_called_once_with({co.RETURN_CODE: co.CODE_OK, co.TRIGGER_ID: test_id})
 
-    @patch("cryton_worker.lib.triggers.HTTPTrigger.add_activator")
-    def test__start_trigger_error(self, mock_add_activator):
-        mock_add_activator.side_effect = RuntimeError
+    def test__start_trigger_existing_error_adding_activator(self):
+        mock_trigger_obj = Mock()
+        mock_trigger_obj.compare_identifiers.return_value = True
+        mock_trigger_obj.add_activator.side_effect = exceptions.TooManyActivators("MSF")
         mock_pipe = Mock()
+        self.worker_obj._triggers.append(mock_trigger_obj)
         self.worker_obj._start_trigger(
-            {co.RESULT_PIPE: mock_pipe, co.DATA: {co.T_HOST: "", co.T_PORT: "", co.T_TYPE: "HTTP"}})
-        mock_pipe.send.assert_called_once_with({co.RETURN_CODE: co.CODE_ERROR, co.STD_ERR: ""})
+            {co.RESULT_PIPE: mock_pipe, co.DATA: {co.TRIGGER_HOST: "", co.TRIGGER_PORT: "", co.TRIGGER_TYPE: "MSF"}})
+        mock_pipe.send.assert_called_once_with({co.RETURN_CODE: co.CODE_ERROR,
+                                                co.STD_ERR: "Trigger 'MSF' can't contain more activators."})
 
     def test__stop_trigger_exists(self):
         mock_trigger_obj = Mock()
@@ -140,21 +161,20 @@ class TestWorker(TestCase):
         mock_pipe = Mock()
         self.worker_obj._triggers.append(mock_trigger_obj)
         self.worker_obj._stop_trigger({co.RESULT_PIPE: mock_pipe,
-                                       co.DATA: {co.T_HOST: "", co.T_PORT: "", co.T_TYPE: "HTTP"}})
+                                       co.DATA: {co.TRIGGER_HOST: "", co.TRIGGER_PORT: "", co.TRIGGER_TYPE: "HTTP"}})
         mock_pipe.send.assert_called_once_with({co.RETURN_CODE: co.CODE_OK})
-
-    def test__stop_trigger_exists_error(self):
-        mock_trigger_obj = Mock()
-        mock_trigger_obj.compare_identifiers.return_value = True
-        mock_trigger_obj.remove_activator.side_effect = RuntimeError
-        mock_pipe = Mock()
-        self.worker_obj._triggers.append(mock_trigger_obj)
-        self.worker_obj._stop_trigger({co.RESULT_PIPE: mock_pipe,
-                                       co.DATA: {co.T_HOST: "", co.T_PORT: "", co.T_TYPE: "HTTP"}})
-        mock_pipe.send.assert_called_once_with({co.RETURN_CODE: co.CODE_ERROR, co.STD_ERR: ""})
 
     def test__stop_trigger_not_found(self):
         mock_pipe = Mock()
         self.worker_obj._stop_trigger({co.RESULT_PIPE: mock_pipe,
-                                       co.DATA: {co.T_HOST: "", co.T_PORT: "", co.T_TYPE: "HTTP"}})
+                                       co.DATA: {co.TRIGGER_HOST: "", co.TRIGGER_PORT: "", co.TRIGGER_TYPE: "HTTP"}})
         mock_pipe.send.assert_called_once_with({co.RETURN_CODE: co.CODE_ERROR, co.STD_ERR: "Trigger not found."})
+
+    def test__list_triggers(self):
+        test_activator = {"id": "test_id"}
+        mock_trigger_obj = Mock()
+        mock_trigger_obj.get_activators.return_value = [test_activator]
+        mock_pipe = Mock()
+        self.worker_obj._triggers.append(mock_trigger_obj)
+        self.worker_obj._list_triggers({co.RESULT_PIPE: mock_pipe})
+        mock_pipe.send.assert_called_once_with({co.RETURN_CODE: co.CODE_OK, co.TRIGGER_LIST: [test_activator]})

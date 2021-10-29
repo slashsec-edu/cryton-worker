@@ -5,7 +5,7 @@ import time
 import traceback
 
 from cryton_worker.lib import consumer
-from cryton_worker.lib.util import constants as co, logger, util
+from cryton_worker.lib.util import constants as co, logger, util, exceptions
 from cryton_worker.lib.triggers import Trigger, TriggerEnum
 
 
@@ -43,6 +43,7 @@ class Worker:
         print("Starting..")
         print("To exit press CTRL+C")
         try:
+            print("Connected to msfrpcd." if util.Metasploit().is_connected() else "Couldn't connect to msfrpcd.")
             self._start_consumer()
             self._start_threaded_processors()
             while not self._stopped and not self._consumer.stopped:  # Keep self alive and check for stops.
@@ -113,7 +114,11 @@ class Worker:
         logger.logger.debug("Threaded processor started.", thread_id=thread_id)
         while not self._stopped:
             request: util.PrioritizedItem = self._main_queue.get()
-            request_action = request.item.pop(co.ACTION)
+            try:
+                request_action = request.item.pop(co.ACTION)
+            except KeyError as ex:
+                logger.logger.warning("Request doesn't contain action.", request=request, error=str(ex))
+                continue
 
             try:  # Try to get method reference.
                 action_callable = getattr(self, request_action)
@@ -201,23 +206,26 @@ class Worker:
         result_pipe = request.pop(co.RESULT_PIPE)
         data = request.pop(co.DATA)
 
-        t_host, t_port, t_type = data.get(co.T_HOST), data.get(co.T_PORT), TriggerEnum[data.get(co.T_TYPE)]
+        trigger_host = data.get(co.TRIGGER_HOST)
+        trigger_port = data.get(co.TRIGGER_PORT)
+        trigger_type = TriggerEnum[data.get(co.TRIGGER_TYPE)]
         with self._triggers_lock:  # Try to find specified Trigger.
             for trigger_obj in self._triggers:
-                if trigger_obj.compare_identifiers(t_type, t_host, t_port):
-                    logger.logger.debug("Found existing Trigger", host=t_host, port=t_port, type=t_type)
+                if trigger_obj.compare_identifiers(trigger_type, trigger_host, trigger_port):
+                    logger.logger.debug("Found existing Trigger", host=trigger_host, port=trigger_port,
+                                        type=trigger_type)
                     break
             else:  # If Trigger doesn't exist, create new one.
-                logger.logger.debug("Creating new Trigger", host=t_host, port=t_port, type=t_type)
-                trigger_obj = t_type(t_host, t_port, self._main_queue)
+                logger.logger.debug("Creating new Trigger", host=trigger_host, port=trigger_port, type=trigger_type)
+                trigger_obj = trigger_type(trigger_host, trigger_port, self._main_queue)
                 self._triggers.append(trigger_obj)
 
-        try:  # Add activator for Trigger.
-            trigger_obj.add_activator(data)
-        except Exception as ex:
+        try:
+            activator_id = trigger_obj.add_activator(data)
+        except exceptions.TooManyActivators as ex:
             result = {co.RETURN_CODE: co.CODE_ERROR, co.STD_ERR: str(ex)}
         else:
-            result = {co.RETURN_CODE: co.CODE_OK}
+            result = {co.RETURN_CODE: co.CODE_OK, co.TRIGGER_ID: activator_id}
 
         result_pipe.send(result)
         logger.logger.debug("Finished process _start_trigger", result=result)
@@ -232,28 +240,39 @@ class Worker:
         result_pipe = request.pop(co.RESULT_PIPE)
         data = request.pop(co.DATA)
 
-        t_host, t_port, t_type = data.get(co.T_HOST), data.get(co.T_PORT), TriggerEnum[data.get(co.T_TYPE)]
+        trigger_id = data.get(co.TRIGGER_ID)
         with self._triggers_lock:  # Try to find specified Trigger.
             for trigger_obj in self._triggers:
-                if trigger_obj.compare_identifiers(t_type, t_host, t_port):
-                    logger.logger.debug("Found existing Trigger", host=t_host, port=t_port, type=t_type)
+                activator = trigger_obj.find_activator(trigger_id)
+                if activator is not None:  # Remove activator from Trigger. Optionally remove it completely.
+                    logger.logger.debug("Found existing activator", id=trigger_id)
+                    trigger_obj.remove_activator(activator)
+                    if not trigger_obj.any_activator_exists():
+                        self._triggers.remove(trigger_obj)
+                    result = {co.RETURN_CODE: co.CODE_OK}
                     break
-            else:  # If Trigger doesn't exist, create new one.
-                logger.logger.debug("Existing Trigger not found", host=t_host, port=t_port, type=t_type)
-                trigger_obj = None
 
-        try:  # Remove activator from Trigger. Optionally remove it completely.
-            trigger_obj.remove_activator(data)
-            if not trigger_obj.any_activator_exists():
-                with self._triggers_lock:
-                    self._triggers.remove(trigger_obj)
-
-        except AttributeError:
-            result = {co.RETURN_CODE: co.CODE_ERROR, co.STD_ERR: "Trigger not found."}
-        except Exception as ex:
-            result = {co.RETURN_CODE: co.CODE_ERROR, co.STD_ERR: str(ex)}
-        else:
-            result = {co.RETURN_CODE: co.CODE_OK}
+            else:  # If Trigger doesn't exist, replace it with None.
+                logger.logger.debug("Existing activator not found", id=trigger_id)
+                result = {co.RETURN_CODE: co.CODE_ERROR, co.STD_ERR: "Trigger not found."}
 
         result_pipe.send(result)
         logger.logger.debug("Finished process _stop_trigger", result=result)
+
+    def _list_triggers(self, request: dict) -> None:
+        """
+        Process; List Triggers (their activators).
+        :param request: Data needed for process (Must contain: co.RESULT_PIPE)
+        :return: None
+        """
+        logger.logger.debug("Calling process _list_triggers", request=request)
+        result_pipe = request.pop(co.RESULT_PIPE)
+
+        with self._triggers_lock:
+            all_activators = []
+            for trigger_obj in self._triggers:
+                all_activators.extend(trigger_obj.get_activators())
+
+        result = {co.RETURN_CODE: co.CODE_OK, co.TRIGGER_LIST: all_activators}
+        result_pipe.send(result)
+        logger.logger.debug("Finished process _list_triggers", result=result)

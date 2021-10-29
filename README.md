@@ -122,7 +122,6 @@ Cryton Worker uses environment variables for it's settings. Please update variab
 ~~~~
 CRYTON_WORKER_MODULES_DIR=CHANGE_ME
 CRYTON_WORKER_DEBUG=False
-CRYTON_WORKER_LOG_CONFIG=CHANGE_ME_OPTIONALLY
 CRYTON_WORKER_MSFRPCD_PASS=toor
 CRYTON_WORKER_MSFRPCD_USERNAME=msf
 CRYTON_WORKER_MSFRPCD_PORT=55553
@@ -145,7 +144,6 @@ Some environment variables can be overridden in CLI. Try using `cryton-worker st
 Worker's settings description: 
 - `CRYTON_WORKER_MODULES_DIR` - (**string**) Path to directory containing modules
 - `CRYTON_WORKER_DEBUG` - (**boolean - True/False**) Run Worker in debug mode
-- `CRYTON_WORKER_LOG_CONFIG` - (**string**) Path to custom logging config
 - `CRYTON_WORKER_MSFRPCD_PASS` - (**string**) Password used for connection to Metasploit framework
 - `CRYTON_WORKER_MSFRPCD_USERNAME` - (**string**) Username used for connection to Metasploit framework
 - `CRYTON_WORKER_MSFRPCD_PORT` - (**int**) Port used for connection to Metasploit framework
@@ -213,7 +211,7 @@ Response is sent to queue defined using `reply_to` parameter in a *message.prope
 
 
 - LIST_SESSIONS - List available Metasploit sessions and send response containing the result (**defined below**). 
-  Example: `"{"event_t": "LIST_SESSIONS", "event_v": {"target_ip": target_ip}}"`
+  Example: `"{"event_t": "LIST_SESSIONS", "event_v": {"target_host": target_ip}}"`
 
 
 - KILL_STEP_EXECUTION - Kill running Step (module) and send response containing the result (**defined below**). 
@@ -224,18 +222,19 @@ Response is sent to queue defined using `reply_to` parameter in a *message.prope
   Example: `"{"event_t": "HEALTH_CHECK", "event_v": {}}"`
 
 
-- START_TRIGGER - Start trigger (trigger "ID" is defined using `{"stage_execution_id": stage_execution_id, "reply_to": reply_to}`) 
-  and send response containing the result (**defined below**). Example for HTTPTrigger: 
-  `"{"event_t": "START_TRIGGER", "event_v": {"host": host, "port": port, "trigger_type": "HTTP", "reply_to": reply_to, 
-  "stage_execution_id": stage_execution_id, "routes": [{"path": path, "method": method, "parameters": [{"name": name, "value": value}]}]}}"`
+- START_TRIGGER - Start trigger and send response containing the result (**defined below**). Example for HTTPTrigger: 
+  `"{"event_t": "START_TRIGGER", "event_v": {"host": host, "port": port, "trigger_type": "HTTP", "reply_to": reply_to_queue, 
+  "routes": [{"path": path, "method": method, "parameters": [{"name": name, "value": value}]}]}}"`
 
 
-- STOP_TRIGGER - Stop trigger (trigger "ID" is defined using `{"stage_execution_id": stage_execution_id, "reply_to": notify_queue_about_trigger_activation}`) 
-  and send response containing the result (**defined below**). Example for HTTPTrigger: 
-  `"{"event_t": "STOP_TRIGGER", "event_v": {"reply_to": reply_to, "stage_execution_id": stage_execution_id, 
-  "host": host, "port": port, "trigger_type": "HTTP"}}"`
+- STOP_TRIGGER - Stop trigger and send response containing the result (**defined below**). Example for HTTPTrigger: 
+  `"{"event_t": "STOP_TRIGGER", "event_v": {"trigger_id": "123"}}"`
 
-**List of supported event type responses:**
+
+- LIST_TRIGGERS - List available triggers and send response containing the result (**defined below**). 
+  Example: `"{"event_t": "LIST_TRIGGERS", "event_v": {}}"`
+
+**List of event type responses:**
 - VALIDATE_MODULE - Result of the above defined request. Example: `"{"event_t": "VALIDATE_MODULE", "event_v": {"return_code": 0, "std_out": "output"}}"`
 
 
@@ -251,7 +250,7 @@ Response is sent to queue defined using `reply_to` parameter in a *message.prope
 - HEALTH_CHECK - Result of the above defined request. Example: `"{"event_t": "HEALTH_CHECK", "event_v": {"return_code": 0}}"`
 
 
-- START_TRIGGER - Result of the above defined request. Example for HTTPTrigger: `"{"event_t": "START_TRIGGER", "event_v": {"return_code": -2, "std_err": "exception"}}"`
+- START_TRIGGER - Result of the above defined request. Example for HTTPTrigger: `"{"event_t": "START_TRIGGER", "event_v": {"return_code": 0, "trigger_id": "123"}}"`
 
 
 - STOP_TRIGGER - Result of the above defined request. Example for HTTPTrigger: `"{"event_t": "STOP_TRIGGER", "event_v": {"return_code": -2, "std_err": "exception"}}"`
@@ -259,6 +258,8 @@ Response is sent to queue defined using `reply_to` parameter in a *message.prope
 
 - TRIGGER_STAGE - Sent when Trigger is activated. Example: `"{"event_t": "TRIGGER_STAGE", "event_v": {"stage_execution_id": stage_execution_id}}"`
 
+
+- LIST_TRIGGERS - Result of the above defined request. Example: `"{"event_t": "LIST_TRIGGERS", "event_v": {"trigger_list": [{"id": "123", "trigger_param": "trigger_param_value", ...}]}}"`
 
 # Creating modules
 
@@ -317,12 +318,29 @@ It gives you access to:
 - **Metasploit** class which is a wrapper for *MsfRpcClient* from *[pymetasploit3](https://pypi.org/project/pymetasploit3/)*.  
   Examples:
   ```python
-  from cryton_worker.lib.util.module_util import Metasploit
-  msf_obj = Metasploit().get_target_sessions("target_ip")
+    # Check if connection to msfrpcd is OK before doing anything.
+    from cryton_worker.lib.util.module_util import Metasploit
+    msf = Metasploit()
+    if msf.is_connected():
+        msf.do_stuff()
   ```
   ```python
-  from cryton_worker.lib.util.module_util import Metasploit
-  msf_obj = Metasploit().msf_client.add_perm_token()
+    from cryton_worker.lib.util.module_util import Metasploit
+    search_criteria = {"via_exploit": "my/exploit"}
+    found_sessions = Metasploit().get_sessions(**search_criteria)
+  ```
+  ```python
+    from cryton_worker.lib.util.module_util import Metasploit
+    output = Metasploit().execute_in_session("my_command", "session_id")
+  ```
+  ```python
+    from cryton_worker.lib.util.module_util import Metasploit
+    options = {"exploit_arguments": {}, "payload_arguments": {}}
+    Metasploit().execute_exploit("my_exploit", "my_payload", **options)
+  ```
+  ```python
+    from cryton_worker.lib.util.module_util import Metasploit
+    token = Metasploit().client.add_perm_token()
   ```
 - **get_file_binary** function to get file as binary.  
   Example:

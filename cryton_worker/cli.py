@@ -62,7 +62,7 @@ def start_worker(install_requirements: bool, rabbit_username: str, rabbit_passwo
     pyfiglet.print_figlet("Worker", "graffiti", "RED")
     if install_requirements:
         click.echo("Checking and installing module requirements..")
-        util.install_modules_requirements()
+        util.install_modules_requirements(config.DEBUG)
 
     worker_obj = worker.Worker(rabbit_host, rabbit_port, rabbit_username, rabbit_password, prefix, consumer_count,
                                processor_count, max_retries, persistent)

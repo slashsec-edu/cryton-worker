@@ -29,11 +29,20 @@ class TestEvent(TestCase):
         self.assertEqual({co.MODULE_LIST: module_list}, result)
 
     @patch("cryton_worker.lib.util.util.Metasploit")
-    def test_list_sessions(self, mock_sessions):
+    def test_list_sessions(self, mock_msf):
         session_list = ["session"]
-        mock_sessions.return_value.get_target_sessions.return_value = session_list
+        mock_msf.return_value.is_connected.return_value = True
+        mock_msf.return_value.get_sessions.return_value = session_list
         result = self.event_obj.list_sessions()
         self.assertEqual({co.SESSION_LIST: session_list}, result)
+
+    @patch("cryton_worker.lib.util.util.Metasploit")
+    def test_list_sessions_unconnected(self, mock_msf):
+        session_list = ["session"]
+        mock_msf.return_value.is_connected.return_value = False
+        mock_msf.return_value.error = Exception
+        result = self.event_obj.list_sessions()
+        self.assertEqual({co.SESSION_LIST: [], co.STD_ERR: str(Exception)}, result)
 
     def test_kill_step_execution(self):
         self.mock__response_pipe.recv.return_value = {co.RETURN_CODE: co.CODE_OK}
@@ -52,4 +61,9 @@ class TestEvent(TestCase):
     def test_stop_trigger(self):
         self.mock__response_pipe.recv.return_value = {co.RETURN_CODE: co.CODE_OK}
         result = self.event_obj.stop_trigger()
+        self.assertEqual({co.RETURN_CODE: co.CODE_OK}, result)
+
+    def test_list_triggers(self):
+        self.mock__response_pipe.recv.return_value = {co.RETURN_CODE: co.CODE_OK}
+        result = self.event_obj.list_triggers()
         self.assertEqual({co.RETURN_CODE: co.CODE_OK}, result)
