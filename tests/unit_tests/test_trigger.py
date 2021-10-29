@@ -1,7 +1,8 @@
 from unittest import TestCase
 from mock import patch, Mock
 
-from cryton_worker.lib.triggers import HTTPTrigger, Trigger, TriggerEnum, exceptions
+from cryton_worker.lib.triggers import HTTPTrigger, Trigger, TriggerEnum, exceptions, MSFTrigger
+from cryton_worker.lib.util import constants as co
 
 
 class TestTriggerEnum(TestCase):
@@ -39,6 +40,20 @@ class TestTrigger(TestCase):
     def test_remove_activator(self):
         self.trigger_obj.remove_activator({})
 
+    def test_find_activator(self):
+        self.assertIsNone(self.trigger_obj.find_activator(""))  # No activator is found
+
+        test_activator = {co.TRIGGER_ID: "test_id"}
+        self.trigger_obj._activators.append(test_activator)
+        result = self.trigger_obj.find_activator("test_id")
+        self.assertEqual(result, test_activator)
+
+    def test_get_activators(self):
+        test_activator = {co.TRIGGER_ID: "test_id"}
+        self.trigger_obj._activators.append(test_activator)
+        result = self.trigger_obj.get_activators()
+        self.assertEqual(result, [test_activator])
+
     def test_any_activator_exists_true(self):
         self.trigger_obj._activators.append({})
         result = self.trigger_obj.any_activator_exists()
@@ -63,25 +78,25 @@ class TestHTTPTrigger(TestCase):
         self.details = {"type": "HTTP", "host": "test", "port": 8082, "event_q": "test", "stage_ex_id": 1, "routes": [
             {"path": "test", "method": "GET", "parameters": [{"name": "a", "value": "1"}]}]}
 
-    @patch("cryton_worker.lib.triggers.http_trigger.HTTPTrigger._restart")
+    @patch("cryton_worker.lib.triggers.trigger_http.HTTPTrigger._restart")
     def test_add_activator(self, mock_restart):
         self.trigger_obj.add_activator(self.details)
         mock_restart.assert_called()
 
-    @patch("cryton_worker.lib.triggers.http_trigger.HTTPTrigger._restart")
+    @patch("cryton_worker.lib.triggers.trigger_http.HTTPTrigger._restart")
     def test_remove_activator(self, mock_restart):
         self.trigger_obj._activators.append(self.details)
         self.trigger_obj.remove_activator(self.details)
         mock_restart.assert_called()
 
-    @patch("cryton_worker.lib.triggers.http_trigger.HTTPTrigger.stop")
+    @patch("cryton_worker.lib.triggers.trigger_http.HTTPTrigger.stop")
     def test__restart_only_stop(self, mock_stop):
         self.trigger_obj._stopped = False
         self.trigger_obj._restart()
         mock_stop.assert_called()
 
-    @patch("cryton_worker.lib.triggers.http_trigger.HTTPTrigger.start")
-    @patch("cryton_worker.lib.triggers.http_trigger.HTTPTrigger.stop")
+    @patch("cryton_worker.lib.triggers.trigger_http.HTTPTrigger.start")
+    @patch("cryton_worker.lib.triggers.trigger_http.HTTPTrigger.stop")
     def test__restart(self, mock_stop, mock_start):
         self.trigger_obj._stopped = False
         self.trigger_obj._activators.append(self.details)
@@ -94,8 +109,8 @@ class TestHTTPTrigger(TestCase):
         ret = self.trigger_obj.any_activator_exists()
         self.assertEqual(ret, 1)
 
-    @patch("cryton_worker.lib.triggers.http_trigger.HTTPTrigger._check_parameters")
-    @patch("cryton_worker.lib.triggers.http_trigger.HTTPTrigger._notify")
+    @patch("cryton_worker.lib.triggers.trigger_http.HTTPTrigger._check_parameters")
+    @patch("cryton_worker.lib.triggers.trigger_http.HTTPTrigger._notify")
     @patch("bottle.request")
     def test__handle_request(self, mock_req, mock_send, mock_params):
         mock_req.method = "GET"
@@ -160,3 +175,56 @@ class TestHTTPTrigger(TestCase):
         self.trigger_obj.stop()
         mock_process.terminate.assert_called()
         self.assertIsNone(self.trigger_obj._process)
+
+
+class TestMSFTrigger(TestCase):
+    @patch("cryton_worker.lib.util.util.Metasploit")
+    def setUp(self, mock_msf):
+        self.mock_msf = mock_msf
+        self.mock_msf.is_connected.return_value = True
+        self.mock_main_queue = Mock()
+        self.trigger_obj = MSFTrigger("test", 1, self.mock_main_queue)
+        self.details = {"type": "MSF", 'host': "", 'port': 1, "reply_to": "", "exploit": "", "exploit_arguments": {},
+                        "payload": "", "payload_arguments": {}}
+
+    @patch("cryton_worker.lib.triggers.trigger_msf.MSFTrigger.start")
+    @patch("cryton_worker.lib.triggers.trigger_base.Trigger._generate_id")
+    def test_add_activator(self, mock_gen, mock_start):
+        mock_gen.return_value = "1"
+        result = self.trigger_obj.add_activator(self.details)
+        self.assertEqual(result, "1")
+        mock_start.assert_called_once()
+
+    @patch("cryton_worker.lib.triggers.trigger_msf.MSFTrigger.any_activator_exists")
+    def test_add_activator_error(self, mock_exists):
+        mock_exists.return_value = True
+        with self.assertRaises(exceptions.TooManyActivators):
+            self.trigger_obj.add_activator(self.details)
+
+    @patch("cryton_worker.lib.triggers.trigger_msf.MSFTrigger.stop")
+    def test_remove_activator(self, mock_stop):
+        self.trigger_obj._activators.append(self.details)
+        self.trigger_obj.remove_activator(self.details)
+        mock_stop.assert_called_once()
+
+    @patch("time.sleep", Mock())
+    @patch("cryton_worker.lib.triggers.trigger_msf.MSFTrigger._notify")
+    def test__check_for_session(self, mock_notify):
+        self.mock_msf.return_value.get_sessions.side_effect = [[], ["1"]]
+        self.trigger_obj._activators.append(self.details)
+        self.trigger_obj._stopped = False
+        self.trigger_obj._check_for_session()
+        mock_notify.assert_called_once()
+
+    @patch("copy.deepcopy", Mock())
+    @patch("threading.Thread.start")
+    def test_start(self, mock_thread):
+        self.trigger_obj._activators.append(self.details)
+        self.trigger_obj.start()
+        self.assertFalse(self.trigger_obj._stopped)
+        mock_thread.assert_called_once()
+
+    def test_stop(self):
+        self.trigger_obj._stopped = False
+        self.trigger_obj.stop()
+        self.assertTrue(self.trigger_obj._stopped)

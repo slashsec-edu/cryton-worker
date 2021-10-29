@@ -1,9 +1,7 @@
 import structlog
 import logging.config
-import yaml
 
 from cryton_worker.etc import config
-from cryton_worker.lib.util import constants
 
 """
 Default Cryton logger setup and configuration
@@ -27,20 +25,48 @@ structlog.configure(
     cache_logger_on_first_use=True,
 )
 
-try:
-    with open(config.LOG_CONFIG, "rt") as f:
-        config_file = yaml.safe_load(f.read())
-except (AttributeError, FileNotFoundError):
-    config_file = yaml.safe_load(constants.DEFAULT_LOG_CONFIG)
-logging.config.dictConfig(config_file)
+config_dict = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "simple": {"format": "%(message)s, [%(thread)d]"}
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "level": "DEBUG",
+            "formatter": "simple",
+            "stream": "ext://sys.stdout"
+        },
+        "sys-logger": {
+            "class": "logging.handlers.SysLogHandler",
+            "level": "INFO",
+            "address": "/dev/log",
+            "formatter": "simple"
+        },
+    },
+    "root": {
+        "level": "NOTSET",
+        "handlers": [],
+        "propagate": True
+    },
+    "loggers": {
+        "cryton-worker": {
+            "level": "INFO",
+            "handlers": ["sys-logger"],
+            "propagate": False
+        },
+        "cryton-worker-debug": {
+            "level": "DEBUG",
+            "handlers": ["console"],
+            "propagate": True
+        }
+    }
+}
 
+logging.config.dictConfig(config_dict)
 amqpstorm_logger = logging.getLogger("amqpstorm")
 
-if config.DEBUG:
-    logger = structlog.get_logger("cryton-worker-debug")
-    logger.setLevel(logging.DEBUG)
-    amqpstorm_logger.propagate = True
-else:
-    logger = structlog.get_logger("cryton-worker")
-    logger.setLevel(logging.INFO)
-    amqpstorm_logger.propagate = False
+logger = structlog.get_logger("cryton-worker-debug" if config.DEBUG else "cryton-worker")
+logger.setLevel(logging.DEBUG if config.DEBUG else logging.INFO)
+amqpstorm_logger.propagate = True if config.DEBUG else False

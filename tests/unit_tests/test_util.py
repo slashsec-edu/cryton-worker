@@ -83,13 +83,6 @@ class TestUtil(TestCase):
         with self.assertRaises(ModuleNotFoundError):
             util.import_module("test")
 
-    @patch("cryton_worker.lib.util.util.MsfRpcClient")
-    def test_msf_sessions(self, mock_msf):
-        mock_msf.return_value.sessions.list = {1: {"target_host": "test"}}
-
-        ret = util.Metasploit().get_target_sessions("test")
-        self.assertEqual([1], ret)
-
     @patch("cryton_worker.etc.config.MODULES_DIR", "/tmp/mods4a4a5a7")
     def test_list_modules(self):
         ret = util.list_modules()
@@ -124,6 +117,63 @@ class TestUtil(TestCase):
     def test_get_manager(self):
         result = util.get_manager()
         self.assertIsInstance(result, Mock)
+
+
+class TestMetasploit(TestCase):
+    @patch("cryton_worker.lib.util.util.MsfRpcClient")
+    def setUp(self, mock_msf_client) -> None:
+        self.mock_client = mock_msf_client
+        self.msf = util.Metasploit()
+
+    @patch("cryton_worker.lib.util.util.MsfRpcClient")
+    def test_get_client_error(self, mock_client):
+        mock_client.side_effect = Exception
+        result = util.Metasploit()
+        self.assertIsNotNone(result.error)
+
+    @patch("cryton_worker.lib.util.util.MsfRpcClient")
+    def test_get_client(self, mock_client):
+        mock_client.return_value = Mock()
+        result = util.Metasploit()
+        self.assertIsNone(result.error)
+
+    def test_is_connected(self):
+        self.msf.error = None
+        self.assertTrue(self.msf.is_connected())
+
+    def test_is_not_connected(self):
+        self.msf.error = Exception
+        self.assertFalse(self.msf.is_connected())
+
+    def test_get_sessions(self):
+        self.mock_client.return_value.sessions.list = {"7": {"a": "ab", "b": "ab"}}
+        ret = self.msf.get_sessions(**{"a": "b", "b": "ab"})
+        self.assertEqual(["7"], ret)
+
+    def test_get_sessions_fail(self):
+        self.mock_client.return_value.sessions.list = {"7": {"a": "ab", "b": "ab"}}
+        ret = self.msf.get_sessions(**{"a": "c", "b": "ab"})
+        self.assertEqual([], ret)
+
+    def test_execute_in_session(self):
+        mock_session = Mock()
+        mock_session.return_value.read.return_value = "test"
+        self.mock_client.return_value.sessions.session = mock_session
+        result = self.msf.execute_in_session("command", "session_id", None, True)
+        self.assertEqual(result, "test")
+
+    def test_execute_in_session_check_end(self):
+        mock_session = Mock()
+        mock_session.return_value.run_with_output.return_value = "test"
+        self.mock_client.return_value.sessions.session = mock_session
+        result = self.msf.execute_in_session("command", "session_id", "check_end", True)
+        self.assertEqual(result, "test")
+
+    def test_execute_exploit(self):
+        mock_exploit, mock_payload = Mock(), Mock()
+        self.mock_client.return_value.modules.use.side_effect = [mock_exploit, mock_payload]
+        self.msf.execute_exploit("exploit", "payload")
+        mock_exploit.execute.assert_called_once()
 
 
 class TestModuleUtil(TestCase):

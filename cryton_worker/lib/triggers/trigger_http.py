@@ -3,7 +3,7 @@ from multiprocessing import Queue, Process
 from typing import Optional
 
 from cryton_worker.lib.util import logger, constants as co
-from cryton_worker.lib.triggers.base_trigger import Trigger
+from cryton_worker.lib.triggers.trigger_base import Trigger
 
 
 class HTTPTrigger(Trigger):
@@ -18,7 +18,7 @@ class HTTPTrigger(Trigger):
         self._app = bottle.Bottle()
         self._stopped = True
 
-    def add_activator(self, details: dict) -> None:
+    def add_activator(self, details: dict) -> str:
         """
         Add activator to Trigger and restart it.
         :param details: Activator options
@@ -27,7 +27,6 @@ class HTTPTrigger(Trigger):
                 "host": str,
                 "port": int,
                 "reply_to": str,
-                "stage_execution_id": int,
                 "routes": [
                     {
                         "path": str,
@@ -38,32 +37,27 @@ class HTTPTrigger(Trigger):
                     }
                 ]
             }
-        :return: None
+        :return: ID of the new activator
         """
         logger.logger.debug("Adding activator to HTTPTrigger.", host=self._host, port=self._port, details=details)
+        activator_id = str(self._generate_id())
+        details.update({co.TRIGGER_ID: activator_id})
+
         with self._activators_lock:
             self._activators.append(details)
             self._restart()
+        return activator_id
 
-    def remove_activator(self, details: dict) -> None:
+    def remove_activator(self, activator: dict) -> None:
         """
         Remove activator from Trigger and restart it.
-        :param details: Activator identification pair
-            Example:
-            {
-                "reply_to": str,
-                "stage_execution_id": int
-            }
+        :param activator: Desired activator
         :return: None
         """
-        logger.logger.debug("Removing activator from HTTPTrigger.", host=self._host, port=self._port, details=details)
+        logger.logger.debug("Removing activator from HTTPTrigger.", host=self._host, port=self._port,
+                            activator_id=activator.get(co.TRIGGER_ID))
         with self._activators_lock:
-            reply_to, stage_ex_id = details.get(co.T_REPLY_TO), details.get(co.T_STAGE_EXECUTION_ID)
-            for activator in self._activators:
-                if activator.get(co.T_REPLY_TO) == reply_to and activator.get(co.T_STAGE_EXECUTION_ID) == stage_ex_id:
-                    self._activators.remove(activator)
-                    break
-
+            self._activators.remove(activator)
             self._restart()
 
     def _restart(self) -> None:
@@ -72,7 +66,7 @@ class HTTPTrigger(Trigger):
         :return: None
         """
         logger.logger.debug("Restarting HTTPTrigger.", host=self._host, port=self._port)
-        if self.any_activator_exists():
+        if self.any_activator_exists():  # If there are no active activators, only call stop.
             if not self._stopped:
                 self.stop()
                 self._app = bottle.Bottle()  # Discard old Bottle instance if adding more activators.
@@ -102,10 +96,10 @@ class HTTPTrigger(Trigger):
                         if request_parameters is not None:
                             message_body = {
                                 co.EVENT_T: co.EVENT_TRIGGER_STAGE,
-                                co.EVENT_V: {co.T_STAGE_EXECUTION_ID: activator.get(co.T_STAGE_EXECUTION_ID),
-                                             co.T_PARAMETERS: request_parameters}
+                                co.EVENT_V: {co.TRIGGER_ID: activator.get(co.TRIGGER_ID),
+                                             co.TRIGGER_PARAMETERS: request_parameters}
                             }
-                            self._notify(activator.get(co.T_REPLY_TO), message_body)
+                            self._notify(activator.get(co.REPLY_TO), message_body)
 
     @staticmethod
     def _check_parameters(parameters: list) -> Optional[dict]:
@@ -141,9 +135,10 @@ class HTTPTrigger(Trigger):
         :return: None
         """
         if self._stopped:
+            print(f"Starting HTTPTrigger. host: {self._host} port: {self._port}")
             logger.logger.debug("Starting HTTPTrigger.", host=self._host, port=self._port)
-            self._process = Process(target=self._app.run, kwargs={co.T_HOST: self._host, co.T_PORT: self._port,
-                                                                  "quiet": True})
+            self._process = Process(target=self._app.run,
+                                    kwargs={co.TRIGGER_HOST: self._host, co.TRIGGER_PORT: self._port, "quiet": True})
             self._process.start()
             self._stopped = False
 
@@ -153,6 +148,7 @@ class HTTPTrigger(Trigger):
         :return: None
         """
         if not self._stopped:
+            print(f"Stopping HTTPTrigger. host: {self._host} port: {self._port}")
             logger.logger.debug("Stopping HTTPTrigger.", host=self._host, port=self._port)
             self._app.close()
             self._process.terminate()

@@ -3,7 +3,7 @@ import glob
 import base64
 import os
 from types import ModuleType
-from pymetasploit3.msfrpc import MsfRpcClient
+from pymetasploit3.msfrpc import MsfRpcClient, ExploitModule, PayloadModule
 import traceback
 import subprocess
 import sys
@@ -134,22 +134,104 @@ class Metasploit:
         :param ssl: Use SSL for connection
         :param kwargs: Additional arguments passed to MsfRpcClient
         """
-        self.msf_client = MsfRpcClient(password=password, username=username, port=port, ssl=ssl, **kwargs)
+        try:
+            self.client = MsfRpcClient(password=password, username=username, port=port, ssl=ssl, **kwargs)
+        except Exception as ex:
+            logger.logger.error(str(ex))
+            self.error = ex
+        else:
+            self.error = None
 
-    def get_target_sessions(self, target_ip: str) -> list:
+    def is_connected(self):
         """
-        Get a list of available session IDs for given target IP.
-        :param target_ip: Target IP
-        :return: Session IDs
+        Checks if there are anny errors from connection creation.
+        :return: True if is connected to msfrpcd
         """
-        logger.logger.debug("Listing sessions.", target=target_ip)
-        sessions_list = []
-        for session_key, session_value in self.msf_client.sessions.list.items():
-            if session_value["target_host"] == target_ip or session_value["tunnel_peer"].split(":")[0] == target_ip:
-                sessions_list.append(session_key)
+        if self.error is None:
+            return True
+        return False
 
-        logger.logger.debug("Finished listing sessions.", target=target_ip, sessions_list=sessions_list)
-        return sessions_list
+    def get_sessions(self, **kwargs) -> list:
+        """
+        Get list of available sessions that meet search requirements.
+        :param kwargs: Search requirements
+            Possible search requirements with example values:
+                'type': 'shell',
+                'tunnel_local': '192.168.56.10:555',
+                'tunnel_peer': '192.168.56.1:48584',
+                'via_exploit': 'exploit/multi/handler',
+                'via_payload': 'payload/python/shell_reverse_tcp',
+                'desc': 'Command shell',
+                'info': '',
+                'workspace': 'false',
+                'session_host': '192.168.56.1',
+                'session_port': 48584,
+                'target_host': '',
+                'username': 'vagrant',
+                'uuid': 'o3mnfksh',
+                'exploit_uuid': 'vkzl8sib',
+                'routes': '',
+                'arch': 'python'
+        :return: Matched sessions
+        """
+        logger.logger.debug("Listing sessions.", kwargs=kwargs)
+
+        found_sessions = []
+        for session_id, session_details in self.client.sessions.list.items():
+            add_session = True
+            for key, val in kwargs.items():
+                detail = session_details.get(key)
+                if detail != val and val not in detail:
+                    add_session = False
+                    break
+
+            if not add_session:
+                continue
+            found_sessions.append(session_id)
+
+        logger.logger.debug("Finished listing sessions.", found_sessions=found_sessions)
+        return found_sessions
+
+    def execute_in_session(self, command: str, session_id: str, end_check: str = None, close: bool = False) -> str:
+        """
+        Execute command in MSF session. Optionally close it.
+        :param command: Command to execute
+        :param session_id: Metasploit session ID
+        :param end_check: Letters that when found will end output gathering from exploit execution
+        :param close: If the session should be closed after executing the command
+        :raises:
+            KeyError if session cannot be read
+        :return: Output from the shell
+        """
+        shell = self.client.sessions.session(session_id)
+        if end_check is None:
+            shell.write(command)
+            result = shell.read()
+        else:
+            result = shell.run_with_output(command, end_check)
+
+        if close:
+            shell.stop()
+        return result
+
+    def execute_exploit(self, exploit: str, payload: str = None, **kwargs) -> None:
+        """
+        Execute exploit in MSF. Optionally with payload.
+        :param exploit: Exploit name (same as in MSF)
+        :param payload: Payload name (same as in MSF)
+        :param kwargs: Additional arguments for exploit and payload
+            exploit_arguments: dict
+            payload_arguments: dict
+        :return: None
+        """
+        exploit_module: ExploitModule = self.client.modules.use(co.EXPLOIT, exploit)
+        exploit_module.update(kwargs.get(co.EXPLOIT_ARGUMENTS, {}))
+
+        payload_module: PayloadModule = self.client.modules.use(co.PAYLOAD, payload)
+        if payload is not None:
+            payload_module.update(kwargs.get(co.PAYLOAD_ARGUMENTS, {}))
+
+        exploit_module.execute(payload=payload_module)
 
 
 def list_modules() -> list:
@@ -167,16 +249,22 @@ def list_modules() -> list:
     return files
 
 
-def install_modules_requirements() -> None:
+def install_modules_requirements(verbose: bool = False) -> None:
     """
     Go through module directories and install all requirement files.
+    :param verbose: Display output from installation
     :return: None
     """
+    additional_args = {}
+    if not verbose:
+        additional_args.update({"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL})
+
     logger.logger.debug("Installing module requirements.")
     for root, dirs, files in os.walk(config.MODULES_DIR):
         for filename in files:
             if filename == "requirements.txt":
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", os.path.join(root, filename)])
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", os.path.join(root, filename)],
+                                      **additional_args)
 
 
 @dataclass(order=True)

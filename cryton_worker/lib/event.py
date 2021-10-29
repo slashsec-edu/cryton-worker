@@ -35,13 +35,17 @@ class Event:
 
     def list_sessions(self) -> dict:
         """
-        List all sessions available on Worker.
+        List all sessions available on Worker and filter them using event_details.
         :return: Details about the event result
         """
         logger.logger.debug("Running event: list_sessions", event_details=self._event_details)
-        target_ip = self._event_details.get(co.TARGET_IP)
-        result = util.Metasploit().get_target_sessions(target_ip)
-        return {co.SESSION_LIST: result}
+        options = self._event_details
+        msf = util.Metasploit()
+        if msf.is_connected():
+            result = {co.SESSION_LIST: msf.get_sessions(**options)}
+        else:
+            result = {co.SESSION_LIST: [], co.STD_ERR: str(msf.error)}
+        return result
 
     def kill_step_execution(self) -> dict:
         """
@@ -86,5 +90,16 @@ class Event:
         item = util.PrioritizedItem(co.MEDIUM_PRIORITY, {co.ACTION: co.ACTION_STOP_TRIGGER,
                                                          co.RESULT_PIPE: self._request_pipe,
                                                          co.DATA: self._event_details})
+        self._main_queue.put(item)
+        return self._response_pipe.recv()
+
+    def list_triggers(self) -> dict:
+        """
+        List all Triggers (their activators) available on Worker.
+        :return: Details about the event result
+        """
+        logger.logger.debug("Running event: list_triggers", event_details=self._event_details)
+        item = util.PrioritizedItem(co.MEDIUM_PRIORITY, {co.ACTION: co.ACTION_LIST_TRIGGERS,
+                                                         co.RESULT_PIPE: self._request_pipe})
         self._main_queue.put(item)
         return self._response_pipe.recv()
