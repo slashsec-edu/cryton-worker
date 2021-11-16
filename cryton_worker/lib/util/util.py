@@ -3,6 +3,7 @@ import glob
 import base64
 import os
 from types import ModuleType
+
 from pymetasploit3.msfrpc import MsfRpcClient, ExploitModule, PayloadModule
 import traceback
 import subprocess
@@ -13,18 +14,19 @@ from multiprocessing.managers import SyncManager
 from dataclasses import dataclass, field
 
 from cryton_worker.etc import config
-from cryton_worker.lib.util import logger, constants as co
+from cryton_worker.lib.util import logger, constants as co, exceptions
+import paramiko
 
 
-def run_module(module_path: str, arguments: dict) -> dict:
+def run_attack_module_on_worker(module_path: str, module_arguments: dict) -> dict:
     """
     Execute module and optionally update its result (file).
-    :param module_path: Path to the module directory relative to config.MODULES_DIR
-    :param arguments: Arguments passed to execute function
+    :param module_path: Path to attack module
+    :param module_arguments: Arguments for attack module
     :return: Updated execution result
     """
-    logger.logger.debug("Running module.", module_name=module_path, arguments=arguments)
-    result = execute_module(module_path, arguments)
+    logger.logger.debug("Running module.", module_name=module_path, arguments=module_arguments)
+    result = execute_attack_module_on_worker(module_path, module_arguments)
 
     # Encode file contents as base64.
     file = result.get(co.FILE)
@@ -42,20 +44,20 @@ def run_module(module_path: str, arguments: dict) -> dict:
 
         # Conversion back from bytes to string.
         file.update({co.FILE_CONTENT: file_content.decode(), co.FILE_ENCODING: co.BASE64})
-        logger.logger.debug("Encoded file content.", module_name=module_path, arguments=arguments)
+        logger.logger.debug("Encoded file content.", module_name=module_path, arguments=module_arguments)
 
-    logger.logger.debug("Module run finished.", module_name=module_path, arguments=arguments, ret=result)
+    logger.logger.debug("Module run finished.", module_name=module_path, arguments=module_arguments, ret=result)
     return result
 
 
-def execute_module(module_path: str, arguments: dict) -> dict:
+def execute_attack_module_on_worker(module_path: str, arguments: dict) -> dict:
     """
     Execute module defined by path and arguments.
     :param module_path: Path to the module directory relative to config.MODULES_DIR
     :param arguments: Arguments passed to execute function
     :return: Execution result
     """
-    logger.logger.debug("Executing module.", module_name=module_path, arguments=arguments)
+    logger.logger.debug("Executing module on worker.", module_name=module_path, arguments=arguments)
     try:  # Try to import the module.
         module_obj = import_module(module_path)
     except Exception as ex:
@@ -123,6 +125,30 @@ def import_module(module_path: str) -> ModuleType:
     return module_obj
 
 
+def ssh_to_target(ssh_arguments: dict):
+    """
+    SSH connection to target with provided arguments.
+    :param ssh_arguments: Arguments for ssh connection
+    :return: Paramiko SSH client
+    """
+
+    target = ssh_arguments["target"]
+    username = ssh_arguments.get("username")
+    password = ssh_arguments.get("password")
+    ssh_key = ssh_arguments.get("ssh_key")
+    port = ssh_arguments.get("port", 22)
+
+    ssh_client = paramiko.SSHClient()
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+    logger.logger.debug("Connecting to target via paramiko ssh client.", target=target)
+    if ssh_key is not None:
+        ssh_client.connect(target, username=username, key_filename=ssh_key, port=port, timeout=10)
+    elif username and password is not None:
+        ssh_client.connect(target, username=username, password=password, port=port, timeout=10)
+    return ssh_client
+
+
 class Metasploit:
     def __init__(self, username: str = config.MSFRPCD_USERNAME, password: str = config.MSFRPCD_PASS,
                  port: int = config.MSFRPCD_PORT, ssl: bool = config.MSFRPCD_SSL, **kwargs):
@@ -150,6 +176,26 @@ class Metasploit:
         if self.error is None:
             return True
         return False
+
+    def get_parameter_from_session(self, session_id, parameter) -> str:
+        """
+        Get a specific parameter from session.
+        :param session_id: Session ID
+        :param parameter: Parameter to return
+        :return: Given parameter from session
+        """
+        logger.logger.debug("Getting sessions from msf.")
+        sessions = self.client.sessions.list
+        if session_id in sessions:
+            try:
+                logger.logger.debug(f"Looking for parameter '{parameter}' in session '{session_id}'")
+                return sessions[session_id][parameter]
+            except KeyError:
+                logger.logger.exception(f"Parameter '{parameter}' not found'")
+                return ''
+        else:
+            logger.logger.error(f"Session with id '{session_id}' not found")
+            raise exceptions.MsfSessionNotFound(session_id)
 
     def get_sessions(self, **kwargs) -> list:
         """

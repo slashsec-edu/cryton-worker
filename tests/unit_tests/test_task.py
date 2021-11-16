@@ -65,16 +65,33 @@ class TestAttackTask(TestCase):
         self.task_obj = task.AttackTask(self.message, self.mock_main_queue)
 
     def test__validate(self):
-        self.task_obj._validate({co.ATTACK_MODULE: "name", co.ATTACK_MODULE_ARGUMENTS: {}, co.ACK_QUEUE: "queue"})
+        self.task_obj._validate({co.ARGUMENTS: {co.ATTACK_MODULE: "", co.ATTACK_MODULE_ARGUMENTS: {}},
+                                 co.STEP_TYPE: co.STEP_TYPE_EXECUTE_ON_WORKER, co.ACK_QUEUE: "queue"})
 
     def test__validate_error(self):
         with self.assertRaises(SchemaError):
             self.task_obj._validate({})
 
-    @patch("cryton_worker.lib.util.util.run_module")
-    def test__execute(self, mock_execute_mod):
+    @patch("cryton_worker.lib.util.util.run_attack_module_on_worker")
+    def test__execute_on_worker(self, mock_execute_mod):
         mock_execute_mod.return_value = 0
-        result = self.task_obj._execute(Mock())
+        result = self.task_obj._execute({co.ACK_QUEUE: "test_que",
+                                         co.STEP_TYPE: co.STEP_TYPE_EXECUTE_ON_WORKER,
+                                         co.ARGUMENTS: {
+                                             co.ATTACK_MODULE: "test_module",
+                                             co.ATTACK_MODULE_ARGUMENTS: {}
+                                         }})
+        self.assertEqual(result, 0)
+
+    @patch("cryton_worker.lib.empire.EmpireClient.execute_on_agent")
+    def test__execute_on_agent(self, mock_execute_on_agent):
+        mock_execute_on_agent.return_value = 0
+        result = self.task_obj._execute({co.ACK_QUEUE: "test_que",
+                                        co.STEP_TYPE: co.STEP_TYPE_EXECUTE_ON_AGENT,
+                                        co.ARGUMENTS: {
+                                             co.USE_AGENT: "test_agent",
+                                             co.EMPIRE_MODULE: "test_module"
+                                        }})
         self.assertEqual(result, 0)
 
 

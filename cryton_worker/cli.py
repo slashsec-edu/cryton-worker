@@ -25,9 +25,9 @@ def cli() -> None:
               help="Rabbit login username.")
 @click.option("-Rp", "--rabbit-password", type=click.STRING, default=config.RABBIT_PASSWORD, show_default=True,
               help="Rabbit login password.")
-@click.option("-Rh", "--rabbit-host", type=click.STRING, default=config.RABBIT_SRV_ADDR, show_default=True,
+@click.option("-Rh", "--rabbit-host", type=click.STRING, default=config.RABBIT_RHOST, show_default=True,
               help="Rabbit server host.")
-@click.option("-RP", "--rabbit-port", type=click.INT, default=config.RABBIT_SRV_PORT, show_default=True,
+@click.option("-RP", "--rabbit-port", type=click.INT, default=config.RABBIT_RPORT, show_default=True,
               help="Rabbit server port.")
 @click.option("-p", "--prefix", type=click.STRING, default=config.RABBIT_WORKER_PREFIX, show_default=True,
               help="What prefix should the Worker use.")

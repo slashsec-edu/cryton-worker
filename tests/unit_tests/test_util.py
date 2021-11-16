@@ -8,39 +8,39 @@ from cryton_worker.lib.util import util, module_util
 
 
 class TestUtil(TestCase):
-    @patch("cryton_worker.lib.util.util.execute_module")
-    def test_run_module(self, execute_module):
+    @patch("cryton_worker.lib.util.util.execute_attack_module_on_worker")
+    def test_run_attack_module_on_worker(self, execute_module):
         execute_module.return_value = {"return_code": 0, "file": {"file_content": 1}}
 
-        ret = util.run_module("test", {"test": "test"})
+        ret = util.run_attack_module_on_worker("test", {"test": "test"})
         self.assertEqual({"return_code": 0, "file": {"file_content": "MQ==", "file_encoding": "base64"}}, ret)
 
     @patch("cryton_worker.lib.util.util.import_module")
-    def test_execute_module(self, mock_import):
+    def test_execute_cryton_module(self, mock_import):
         mock_import.return_value.execute.return_value = {"return_code": 0}
 
-        ret = util.execute_module("test", {"test": "test"})
+        ret = util.execute_attack_module_on_worker("test", {"test": "test"})
         self.assertEqual({"return_code": 0}, ret)
 
     @patch("cryton_worker.lib.util.util.import_module")
     def test_execute_module_import_err(self, mock_import):
         mock_import.side_effect = ModuleNotFoundError
 
-        ret = util.execute_module("test", {"test": "test"})
+        ret = util.execute_attack_module_on_worker("test", {"test": "test"})
         self.assertEqual(-2, ret.get("return_code"))
 
     @patch("cryton_worker.lib.util.util.import_module")
     def test_execute_module_call_err(self, mock_import):
         mock_import.return_value.execute.side_effect = RuntimeError
 
-        ret = util.execute_module("test", {"test": "test"})
+        ret = util.execute_attack_module_on_worker("test", {"test": "test"})
         self.assertEqual(-2, ret.get("return_code"))
 
     @patch("cryton_worker.lib.util.util.import_module")
     def test_execute_module_attribute_err(self, mock_import):
         mock_import.return_value.__delattr__("execute")
 
-        ret = util.execute_module("test", {"test": "test"})
+        ret = util.execute_attack_module_on_worker("test", {"test": "test"})
         self.assertEqual(-2, ret.get("return_code"))
 
     @patch("cryton_worker.lib.util.util.import_module")
@@ -117,6 +117,23 @@ class TestUtil(TestCase):
     def test_get_manager(self):
         result = util.get_manager()
         self.assertIsInstance(result, Mock)
+
+    @patch("cryton_worker.lib.util.util.paramiko.SSHClient")
+    def test_ssh_to_target(self, mock_client):
+        mock_connect = Mock()
+        mock_client.return_value.connect = mock_connect
+        ssh_arguments_key = {"target": "test_target", "username": "test_username", "ssh_key": "test_key", "port": 22}
+        ssh_arguments_password = {"target": "test_target", "username": "test_username", "password": "test_password",
+                                  "port": 22}
+
+        ret = util.ssh_to_target(ssh_arguments_key)
+        mock_connect.assert_called_with("test_target", username="test_username", key_filename="test_key", port=22,
+                                        timeout=10)
+        self.assertIsNotNone(ret)
+        ret = util.ssh_to_target(ssh_arguments_password)
+        mock_connect.assert_called_with("test_target", username="test_username", password="test_password", port=22,
+                                        timeout=10)
+        self.assertIsNotNone(ret)
 
 
 class TestMetasploit(TestCase):
