@@ -48,22 +48,55 @@ PAYLOAD = "payload"
 EXPLOIT_ARGUMENTS = "exploit_arguments"
 PAYLOAD_ARGUMENTS = "payload_arguments"
 
+# Step types
+STEP_TYPE = "step_type"
+STEP_TYPE_EXECUTE_ON_WORKER = 'cryton/execute-on-worker'
+STEP_TYPE_DEPLOY_AGENT = 'empire/deploy-agent'
+STEP_TYPE_EXECUTE_ON_AGENT = 'empire/execute-on-agent'
+
 
 # RabbitMQ message keywords
 EVENT_T = "event_t"
 EVENT_V = "event_v"
-ATTACK_MODULE = "attack_module"
-ATTACK_MODULE_ARGUMENTS = "attack_module_arguments"
-DEFAULT_MSG_PROPERTIES = {"content_encoding": "utf-8", "timestamp": datetime.now()}
+ARGUMENTS = "arguments"
+DEFAULT_MSG_PROPERTIES = {"content_encoding": "utf-8", 'timestamp': datetime.now()}
 TARGET_IP = "target_ip"
 SESSION_LIST = "session_list"
 MODULE_LIST = "module_list"
 TRIGGER_LIST = "trigger_list"
 ACK_QUEUE = "ack_queue"
 
+# Step type execute-on-worker arguments keywords
+ATTACK_MODULE = "attack_module"
+ATTACK_MODULE_ARGUMENTS = "attack_module_args"
+
+# Step type execute-on-agent arguments keywords
+USE_AGENT = "use_agent"
+EMPIRE_MODULE = "empire_module"
+EMPIRE_MODULE_ARGUMENTS = "empire_module_args"
+EMPIRE_SHELL_COMMAND = "shell_command"
+
+# Step type deploy-agent arguments keywords
+STAGER_ARGUMENTS = "stager_arguments"
+STAGER_ARGS_STAGER_TYPE = "stager_type"
+STAGER_ARGS_TARGET_OS_TYPE = "os_type"
+STAGER_ARGS_LISTENER_TYPE = "listener_type"
+STAGER_ARGS_LISTENER_NAME = "listener_name"
+STAGER_ARGS_LISTENER_PORT = "listener_port"
+STAGER_ARGS_AGENT_NAME = "agent_name"
+STAGER_ARGS_STAGER_OPTIONS = "stager_options"
+STAGER_ARGS_LISTENER_OPTIONS = "listener_options"
+
+# Session system keywords
+SESSION_ID = 'session_id'
+CREATE_NAMED_SESSION = 'create_named_session'
+USE_NAMED_SESSION = 'use_named_session'
+USE_ANY_SESSION_TO_TARGET = 'use_any_session_to_target'
+
 # Other constants
 RETURN_CODE = "return_code"
 STD_ERR = "std_err"
+STD_OUT = "std_out"
 CODE_ERROR = -2
 CODE_OK = 0
 CODE_KILL = -3
@@ -78,7 +111,7 @@ REPLY_TO = "reply_to"
 EVENT_VALIDATE_MODULE_SCHEMA = {ATTACK_MODULE: str, ATTACK_MODULE_ARGUMENTS: dict}
 EVENT_LIST_MODULES_SCHEMA = dict
 EVENT_LIST_SESSIONS_SCHEMA = {Optional(Or("type", "tunnel_local", "tunnel_peer", "via_exploit", "via_payload", "desc",
-                                          "info", "workspace", "session_host", "session_port", "target_host", 
+                                          "info", "workspace", "session_host", "session_port", "target_host",
                                           "username", "uuid", "exploit_uuid", "routes", "arch")): Or(str, int)}
 EVENT_KILL_STEP_EXECUTION_SCHEMA = {"correlation_id": str}
 EVENT_HEALTH_CHECK_SCHEMA = {}

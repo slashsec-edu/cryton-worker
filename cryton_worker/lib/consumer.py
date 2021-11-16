@@ -27,8 +27,10 @@ class Consumer:
         :param persistent: Keep Worker alive and keep on trying forever (if True)
         """
         attack_q = f"cryton_worker.{prefix}.attack.request"
+        agent_q = f"cryton_worker.{prefix}.agent.request"
         control_q = f"cryton_worker.{prefix}.control.request"
-        self._queues = {attack_q: self._callback_attack, control_q: self._callback_control}
+        self._queues = {attack_q: self._callback_attack, control_q: self._callback_control, 
+                        agent_q: self._callback_agent}
 
         self._hostname = rabbit_host
         self._port = rabbit_port
@@ -169,6 +171,19 @@ class Consumer:
         logger.logger.debug("Calling attack callback.", correlation_id=message.correlation_id,
                             message_body=message.body)
         task_obj = task.AttackTask(message, self._main_queue)
+        task_obj.start()
+        with self._tasks_lock:
+            self._tasks.append(task_obj)
+
+    def _callback_agent(self, message: amqpstorm.Message) -> None:
+        """
+        Create new AgentTask and save it.
+        :param message: Received RabbitMQ Message
+        :return: None
+        """
+        logger.logger.debug("Calling agent callback.", correlation_id=message.correlation_id,
+                            message_body=message.body)
+        task_obj = task.AgentTask(message, self._main_queue)
         task_obj.start()
         with self._tasks_lock:
             self._tasks.append(task_obj)

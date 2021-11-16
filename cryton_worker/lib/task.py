@@ -2,9 +2,10 @@ from multiprocessing import Process
 import amqpstorm
 import json
 import traceback
-from schema import Schema, Or, SchemaError
+from schema import Schema, Or, SchemaError, Optional
+import asyncio
 
-from cryton_worker.lib import event
+from cryton_worker.lib import event, empire
 from cryton_worker.lib.util import util, constants as co, logger
 
 
@@ -121,8 +122,28 @@ class AttackTask(Task):
         """
         validation_schema = Schema({
             co.ACK_QUEUE: str,
-            co.ATTACK_MODULE: str,
-            co.ATTACK_MODULE_ARGUMENTS: dict
+            co.STEP_TYPE: Or(
+                co.STEP_TYPE_EXECUTE_ON_WORKER, co.STEP_TYPE_EXECUTE_ON_AGENT
+            ),
+            co.ARGUMENTS: Or(
+                {
+                    Optional(co.SESSION_ID): str,
+                    Optional(co.USE_NAMED_SESSION): str,
+                    Optional(co.CREATE_NAMED_SESSION): str,
+                    Optional(co.USE_ANY_SESSION_TO_TARGET): str,
+                    co.ATTACK_MODULE: str,
+                    co.ATTACK_MODULE_ARGUMENTS: dict,
+                },
+                {
+                    co.USE_AGENT: str,
+                    co.EMPIRE_MODULE: str,
+                    Optional(co.EMPIRE_MODULE_ARGUMENTS): dict
+                },
+                {
+                    co.USE_AGENT: str,
+                    co.EMPIRE_SHELL_COMMAND: str,
+                }
+            )
         })
 
         validation_schema.validate(message_body)
@@ -144,12 +165,73 @@ class AttackTask(Task):
         self._main_queue.put(item)
 
         # Extract needed data.
-        module_name = message_body.pop(co.ATTACK_MODULE)
-        module_arguments = message_body.pop(co.ATTACK_MODULE_ARGUMENTS)
+        step_type = message_body.pop(co.STEP_TYPE)
+        arguments = message_body.pop(co.ARGUMENTS, {})
 
         # Start module execution.
-        result = util.run_module(module_name, module_arguments)
-        logger.logger.info("Finished AttackTask._execute().", correlation_id=self.correlation_id)
+        if step_type == co.STEP_TYPE_EXECUTE_ON_WORKER:
+            module_path = arguments.pop(co.ATTACK_MODULE)
+            module_arguments = arguments.pop(co.ATTACK_MODULE_ARGUMENTS)
+            result = util.run_attack_module_on_worker(module_path, module_arguments)
+
+        elif step_type == co.STEP_TYPE_EXECUTE_ON_AGENT:
+            empire_client = empire.EmpireClient()
+            result = asyncio.run(empire_client.execute_on_agent(arguments))
+
+        logger.logger.info("Finished AttackTask._execute().", correlation_id=self.correlation_id,
+                           step_type=step_type)
+        return result
+
+
+class AgentTask(Task):
+    def __init__(self, message: amqpstorm.Message, main_queue: util.ManagerPriorityQueue):
+        """
+        Class for processing agent callbacks.
+        :param message: Received RabbitMQ Message
+        :param main_queue: Worker's queue for internal request processing
+        """
+        super().__init__(message, main_queue)
+
+    def _validate(self, message_body: dict) -> None:
+        """
+        Custom validation for callback processing.
+        :param message_body: Received RabbitMQ Message's
+        :return: None
+        """
+        validation_schema = Schema({
+            co.ACK_QUEUE: str,
+            co.STEP_TYPE: co.STEP_TYPE_DEPLOY_AGENT,
+            co.ARGUMENTS:
+                {
+                    Optional(co.SESSION_ID): str,
+                    Optional(co.USE_NAMED_SESSION): str,
+                    Optional(co.USE_ANY_SESSION_TO_TARGET): str,
+                    co.STAGER_ARGUMENTS: dict,
+                },
+        })
+
+        validation_schema.validate(message_body)
+
+    def _execute(self, message_body: dict) -> dict:
+        """
+        Custom execution for agent callback processing.
+        Deploy agent.
+        :param message_body: Received RabbitMQ Message's
+        :return: Execution's result
+        """
+        logger.logger.info("Running AgentTask._execute().", correlation_id=self.correlation_id)
+
+        # Confirm message was received.
+        ack_queue = message_body.pop(co.ACK_QUEUE)
+        msg_body = {co.RETURN_CODE: co.CODE_OK, co.CORRELATION_ID: self.correlation_id}
+        item = util.PrioritizedItem(co.HIGH_PRIORITY, {co.ACTION: co.ACTION_SEND_MESSAGE, co.DATA: msg_body,
+                                                       co.QUEUE_NAME: ack_queue, co.PROPERTIES: {}})
+        self._main_queue.put(item)
+
+        arguments = message_body.pop(co.ARGUMENTS, {})
+
+        result = asyncio.run(empire.deploy_agent(arguments))
+        logger.logger.info("Finished AgentTask._execute().", correlation_id=self.correlation_id)
         return result
 
 
