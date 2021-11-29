@@ -92,6 +92,7 @@ SESSION_ID = 'session_id'
 CREATE_NAMED_SESSION = 'create_named_session'
 USE_NAMED_SESSION = 'use_named_session'
 USE_ANY_SESSION_TO_TARGET = 'use_any_session_to_target'
+SSH_CONNECTION = 'ssh_connection'
 
 # Other constants
 RETURN_CODE = "return_code"

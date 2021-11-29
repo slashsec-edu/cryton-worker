@@ -131,6 +131,7 @@ class AttackTask(Task):
                     Optional(co.USE_NAMED_SESSION): str,
                     Optional(co.CREATE_NAMED_SESSION): str,
                     Optional(co.USE_ANY_SESSION_TO_TARGET): str,
+                    Optional(co.SSH_CONNECTION): dict,
                     co.ATTACK_MODULE: str,
                     co.ATTACK_MODULE_ARGUMENTS: dict,
                 },
@@ -206,6 +207,7 @@ class AgentTask(Task):
                     Optional(co.SESSION_ID): str,
                     Optional(co.USE_NAMED_SESSION): str,
                     Optional(co.USE_ANY_SESSION_TO_TARGET): str,
+                    Optional(co.SSH_CONNECTION): dict,
                     co.STAGER_ARGUMENTS: dict,
                 },
         })
