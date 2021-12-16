@@ -4,11 +4,11 @@ with open('requirements.txt') as f:
     requirements = f.read().splitlines()
 
 setup(name='cryton_worker',
-      version='2021.2.1',
-      description='Cryton Worker - Attack scenario automation toolset',
+      version='2021.4.1',
+      description='Cryton Worker - Attack scenario orchestrator',
       url='https://gitlab.ics.muni.cz/beast-public/cryton/cryton-worker',
-      author='Ivo Nutar, Jiri Raja, Andrej Tomci',
-      author_email='nutar@ics.muni.cz, 469429@mail.muni.cz, 469192@mail.muni.cz',
+      author='Ivo Nutar, Jiri Raja, Andrej Tomci, Milan Bohacek',
+      author_email='nutar@ics.muni.cz, 469429@mail.muni.cz, 469192@mail.muni.cz, 244656@mail.muni.cz',
       packages=find_packages(),
       python_requires='>3.8',
       install_requires=requirements,
