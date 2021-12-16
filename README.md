@@ -1,4 +1,3 @@
-
 [[_TOC_]]
 
 ![Coverage](https://gitlab.ics.muni.cz/beast-public/cryton/cryton-worker/badges/master/coverage.svg)
@@ -10,6 +9,8 @@ Cryton worker is an application for orchestrating and executing Cryton or custom
 and remotely. Cryton worker utilizes [RabbitMQ](https://www.rabbitmq.com/) as it's messaging protocol for asynchronous RPC.  
 To control Cryton Worker, [Cryton Core](https://gitlab.ics.muni.cz/beast-public/cryton/cryton-core) is 
 recommended. However, it is possible to use it as a standalone application and control it using [your own requests](#rabbit-api).
+
+[Link to the documentation](https://beast-public.gitlab-pages.ics.muni.cz/cryton/cryton-documentation/).
 
 ## Installation
 Important note: this guide only explains how to install **Cryton Worker** package. to be able to execute the 
