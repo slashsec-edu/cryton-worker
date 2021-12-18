@@ -21,7 +21,7 @@ package. If you want to use attack modules provided by Cryton, you also have to 
 ### Using virtual environment (recommended)
 
 **Dependencies**
-- Python >3.8
+- Python >=3.8
 - metasploit-framework
 - pipenv (optional)
 
@@ -41,7 +41,9 @@ Everything should be set. Check if the installation was successful using:
 cryton-worker
 ```
 
-If there is an error due to missing *environment variables* go to [Settings section](#settings).
+You should see a help page.
+
+If there is an error due to missing *environment variables* go to the [settings section](#settings).
 
 #### Development
 For development, all you need to do is use `develop` instead of `install`.
@@ -75,7 +77,7 @@ docker run hello-world
 
 For correct installation you need to update `.env` file. For example `CRYTON_WORKER_RABBIT_RHOST` must contain 
 the same address as your *RabbitMQ server* and `CRYTON_WORKER_RABBIT_WORKER_PREFIX` must be the same as the one used 
-in *Cryton Core*. For more information about *Cryton Worker* settings go to [Settings section](#settings).
+in *Cryton Core*. For more information about *Cryton Worker* settings go to the [settings section](#settings).
 
 
 Now, run docker-compose, which will pull, build and start all necessary docker images:
@@ -121,7 +123,7 @@ If you're using *pipenv* as your Python virtual environment, re-entering it shou
 To update environment variable you can use *export* command. For example: `export CRYTON_WORKER_RABBIT_WORKER_PREFIX=my_worker`.
 Some environment variables can be overridden in CLI. Try using `cryton-worker start --help`.
 
-Worker's settings description: 
+Settings description: 
 - `CRYTON_WORKER_MODULES_DIR` - (**string**) Path to directory containing modules
 - `CRYTON_WORKER_DEBUG` - (**boolean - True/False**) Run Worker in debug mode
 - `CRYTON_WORKER_MSFRPCD_PASS` - (**string**) Password used for connection to Metasploit framework
@@ -145,7 +147,7 @@ Worker's settings description:
 ## Usage
 To be able to use Worker, you need to update your `.env` file or export the variables. For example `CRYTON_WORKER_RABBIT_RHOST` must contain 
 the same address as your *RabbitMQ server* and `CRYTON_WORKER_RABBIT_WORKER_PREFIX` must be the same as the one saved 
-in *Cryton Core*. For more information about *Cryton Worker* settings go to [Settings section](#settings). Some 
+in *Cryton Core*. For more information about *Cryton Worker* settings go to the [settings section](#settings). Some 
 environment variables can be overridden in CLI. Try using `cryton-worker start --help`.
 
 To be able to **execute** (validate) **attack modules** you must download and save them into the same directory. Then update 
