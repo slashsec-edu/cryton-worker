@@ -10,7 +10,7 @@ setup(name='cryton_worker',
       author='Ivo Nutar, Jiri Raja, Andrej Tomci, Milan Bohacek',
       author_email='nutar@ics.muni.cz, 469429@mail.muni.cz, 469192@mail.muni.cz, 244656@mail.muni.cz',
       packages=find_packages(),
-      python_requires='>3.8',
+      python_requires='>=3.8',
       install_requires=requirements,
       entry_points={
           'console_scripts': [
