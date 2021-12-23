@@ -164,6 +164,8 @@ CRYTON_WORKER_MODULES_DIR/
     └── mod.py
 ```
 
+**NOTICE: It is a best practice to use one Worker on one machine.**
+
 To start Worker use `cryton-worker start` and you should see something like:
 ```
 Starting..
