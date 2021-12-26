@@ -1,12 +1,16 @@
 import asyncio
 import socket
+import time
+from typing import Optional
+
 import paramiko
 from utinni import EmpireApiClient, EmpireObject, EmpireApi, EmpireAgent, \
-    EmpireModuleExecutionError, EmpireModuleExecutionTimeout
+    EmpireModuleExecutionError, EmpireModuleExecutionTimeout, EmpireLoginError
 
 from cryton_worker.lib.util.util import Metasploit, ssh_to_target
 from cryton_worker.etc import config
 from cryton_worker.lib.util import logger, constants as co
+from httpx import RemoteProtocolError
 
 
 class EmpireClient(EmpireApiClient):
@@ -26,10 +30,13 @@ class EmpireClient(EmpireApiClient):
         :param username: Username used for login to Empire
         :param password: Password used for login to Empire
         """
-        await self.login(username, password)
-        logger.logger.debug("Empire login successful")
+        try:
+            await self.login(username, password)
+        except EmpireLoginError:
+            logger.logger.debug("Unable to login to the Empire server, credentials invalid")
+            raise EmpireLoginError("Unable to login to the Empire server, credentials invalid")
 
-    async def agent_poller(self, target_ip) -> EmpireAgent:
+    async def agent_poller(self, target_ip) -> Optional[EmpireAgent]:
         """
         Check for new agents in 1 sec interval until the right one is found.
         :param target_ip: IP address of target that agent should've been deployed to
@@ -38,7 +45,7 @@ class EmpireClient(EmpireApiClient):
         # Poll for new agents every 1 sec
         logger.logger.debug("* Waiting for agents...")
         previous_agents = []
-        while True:
+        for check in range(10):
             for agent in await self.agents.get():
                 for previous_agent in previous_agents:
                     if previous_agent.name == agent.name:
@@ -48,7 +55,8 @@ class EmpireClient(EmpireApiClient):
                     return agent
                 previous_agents.append(agent)
                 logger.logger.debug(f"agents:{previous_agents}")
-            await asyncio.sleep(1)
+            await asyncio.sleep(3)
+        return None
 
     async def generate_payload(self, stager_arguments: dict) -> str:
         """
@@ -57,43 +65,35 @@ class EmpireClient(EmpireApiClient):
         :return: Executable stager
         """
 
-        try:
-            listener_name = stager_arguments[co.STAGER_ARGS_LISTENER_NAME]
-            listener_port = stager_arguments[co.STAGER_ARGS_LISTENER_PORT]
-            stager_type = stager_arguments[co.STAGER_ARGS_STAGER_TYPE]
-        except KeyError as missing_parameter:
-            logger.logger.error("Missing argument in stager_arguments.", missing_parameter=missing_parameter,
-                                stager_arguments=stager_arguments)
-            raise KeyError(f"Missing '{str(missing_parameter)}' argument in stager_arguments.")
+        # checked during validation
+        listener_name = stager_arguments[co.STAGER_ARGS_LISTENER_NAME]
+        stager_type = stager_arguments[co.STAGER_ARGS_STAGER_TYPE]
 
+        listener_port = stager_arguments.get(co.STAGER_ARGS_LISTENER_PORT, 80)
         listener_type = stager_arguments.get(co.STAGER_ARGS_LISTENER_TYPE, "http")
         stager_options = stager_arguments.get(co.STAGER_ARGS_STAGER_OPTIONS)
         listener_options = stager_arguments.get(co.STAGER_ARGS_LISTENER_OPTIONS, {})
 
         # check if listener already exists
         listener_get_response = await self.listeners.get(listener_name)
-        logger.logger.debug("Listener response", listener=listener_get_response)
+        logger.logger.debug(f"Using existing listener '{listener_name}'")
         if "error" in listener_get_response:
             # create listener
             logger.logger.debug("Creating listener.", listener_name=listener_name)
             try:
-                await self.listeners.create(listener_type, listener_name, additional={"Port": listener_port,
-                                                                                      **listener_options})
+                await try_empire_request(self.listeners.create, listener_type, listener_name,
+                                         additional={"Port": listener_port, **listener_options})
             except KeyError:
-                logger.logger.debug("Listener could not be created.")
-                raise KeyError(f"Listener could not be created.")
+                logger.logger.debug("Listener could not be created. Check if port is not already in use.")
+                raise KeyError(f"Listener could not be created. Check if port is not already in use.")
             logger.logger.debug(f"Listener '{listener_name}' created")
 
         # check if stager is in Empire database
-        try:
-            stager = await self.stagers.get(stager_type)
-        except KeyError:
-            logger.logger.error(f"Stager type {stager_type} not found in Empire.")
-            raise KeyError(f"Stager type {stager_type} not found in Empire.")
+        stager = await try_empire_request(self.stagers.get, stager_type)
 
         logger.logger.debug("Generating stager output.", stager_type=stager_type, listener_name=listener_name)
         try:
-            stager_output = await stager.generate(stager_type, listener_name, stager_options)
+            stager_output = await try_empire_request(stager.generate, stager_type, listener_name, stager_options)
         except KeyError:
             logger.logger.error(f"Stager could not be generated, check if the supplied listener exists.")
             raise KeyError(f"Stager could not be generated, check if the supplied listener exists.")
@@ -108,12 +108,8 @@ class EmpireClient(EmpireApiClient):
         :return: Execution result
         """
         await self.default_login()
-        try:
-            agent_name = arguments["use_agent"]
-        except KeyError as ex:
-            logger.logger.error(f"Missing required {str(ex)} argument.", missing_argument=ex)
-            return {co.STD_ERR: f"Missing required {str(ex)} argument.", co.RETURN_CODE: -2}
 
+        agent_name = arguments["use_agent"]  # checked during validation
         module_name = arguments.get("empire_module")
         shell_command = arguments.get("shell_command")
         module_args = arguments.get("empire_module_args", {})
@@ -181,6 +177,24 @@ class EmpireStagers(EmpireApi):
         return r.json()[stager]["Output"]
 
 
+async def try_empire_request(fc_to_run, *fc_args, **fc_kwargs):
+    """
+    Try to execute empire function(REST API request), if RemoteProtocolError happens, try again.
+    :param fc_to_run: Empire function to execute
+    :return: Passed function result
+    """
+    for i in range(4):
+        try:
+            result = await fc_to_run(*fc_args, **fc_kwargs)
+        except RemoteProtocolError:
+            logger.logger.debug("Event type ConnectionClosed. Retrying...")
+            time.sleep(1 + (i * 2))
+            continue
+        else:
+            return result
+    raise ConnectionError("Cannot connect to the Empire server")
+
+
 async def deploy_agent(arguments: dict) -> dict:
     """
     Deploy stager on target and create agent.
@@ -197,7 +211,9 @@ async def deploy_agent(arguments: dict) -> dict:
         payload = await empire.generate_payload(stager_arguments)
     except KeyError as err:
         return {co.STD_ERR: str(err), co.RETURN_CODE: -2}
-    logger.logger.debug("Stager payload.", payload=payload)
+    except ConnectionError as err:
+        logger.logger.error("Cannot connect to the Empire server")
+        return {co.STD_ERR: str(err), co.RETURN_CODE: -2}
 
     # Check type of connection to target
     if "session_id" in arguments:
@@ -232,15 +248,15 @@ async def deploy_agent(arguments: dict) -> dict:
         logger.logger.error("Missing 'ssh_connection' or 'session_id' argument.")
         return {co.STD_ERR: "Missing 'ssh_connection' or 'session_id' argument.", co.RETURN_CODE: -2}
 
-    try:
-        new_agent_name = stager_arguments[co.STAGER_ARGS_AGENT_NAME]
-    except KeyError as err:
-        logger.logger.error(f"Missing {str(err)} argument.", original_error=err)
-        return {co.STD_ERR: f"Missing {str(err)} argument.", co.RETURN_CODE: -2}
+    new_agent_name = stager_arguments[co.STAGER_ARGS_AGENT_NAME]  # checked during validation
 
     # Rename agent to given name
     logger.logger.debug("Renaming agent", target_ip=target_ip)
     agent = await empire.agent_poller(target_ip)
+
+    if agent is None:
+        return {co.STD_ERR: "Agent could not be deployed or didn't connect to the empire server", co.RETURN_CODE: -2}
+
     agent_rename_response = await agent.rename(new_agent_name)
     logger.logger.debug(f"Agent renamed to '{agent.name}'", response=agent_rename_response)
 

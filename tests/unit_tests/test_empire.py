@@ -110,11 +110,6 @@ class TestDeployAgent:
         ret = await empire.deploy_agent({co.STAGER_ARGUMENTS: {"agent_name": "agent1"}})
         assert ret == {co.STD_ERR: "Missing 'ssh_connection' or 'session_id' argument.", co.RETURN_CODE: -2}
 
-    async def test_deploy_agent_missing_agent_name(self, mocker, msf, empire_client_mock):
-        msf.return_value.execute_in_session = Mock()
-        ret = await empire.deploy_agent({"session_id": "1", co.STAGER_ARGUMENTS: {}})
-        assert ret == {co.STD_ERR: "Missing 'agent_name' argument.", co.RETURN_CODE: -2}
-
 
 @pytest.mark.asyncio
 class TestEmpireClient:
@@ -135,10 +130,6 @@ class TestEmpireClient:
         agent.shell.assert_called_with("test_command")
 
         assert ret == {"return_code": 0, "std_out": "fake_module_execution"}
-
-    async def test_execute_on_agent_key_error(self, empire_client):
-        ret = await empire_client.execute_on_agent({"empire_module": "test_module"})
-        assert ret == {"return_code": -2, "std_err": "Missing required 'use_agent' argument."} 
 
     async def test_execute_on_agent_agent_not_found(self, empire_client):
         empire_client.agents.get = AsyncMock(side_effect=KeyError())
