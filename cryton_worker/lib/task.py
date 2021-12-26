@@ -3,6 +3,7 @@ import amqpstorm
 import json
 import traceback
 from schema import Schema, Or, SchemaError, Optional
+from utinni import EmpireLoginError
 import asyncio
 
 from cryton_worker.lib import event, empire
@@ -212,7 +213,18 @@ class AgentTask(Task):
                 },
         })
 
+        stager_arguments_validation_schema = Schema({
+            co.STAGER_ARGS_LISTENER_NAME: str,
+            co.STAGER_ARGS_STAGER_TYPE: str,
+            co.STAGER_ARGS_AGENT_NAME: str,
+            Optional(co.STAGER_ARGS_LISTENER_TYPE): str,
+            Optional(co.STAGER_ARGS_LISTENER_PORT): int,
+            Optional(co.STAGER_ARGS_LISTENER_OPTIONS): dict,
+            Optional(co.STAGER_ARGS_STAGER_OPTIONS): dict,
+        })
+
         validation_schema.validate(message_body)
+        stager_arguments_validation_schema.validate(message_body[co.ARGUMENTS][co.STAGER_ARGUMENTS])
 
     def _execute(self, message_body: dict) -> dict:
         """
@@ -232,7 +244,11 @@ class AgentTask(Task):
 
         arguments = message_body.pop(co.ARGUMENTS, {})
 
-        result = asyncio.run(empire.deploy_agent(arguments))
+        try:
+            result = asyncio.run(empire.deploy_agent(arguments))
+        except (ConnectionError, EmpireLoginError) as err:
+            result = {co.RETURN_CODE: -2, co.STD_ERR: str(err)}
+
         logger.logger.info("Finished AgentTask._execute().", correlation_id=self.correlation_id)
         return result
 
