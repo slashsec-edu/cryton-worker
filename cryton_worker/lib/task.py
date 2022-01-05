@@ -178,7 +178,10 @@ class AttackTask(Task):
 
         elif step_type == co.STEP_TYPE_EXECUTE_ON_AGENT:
             empire_client = empire.EmpireClient()
-            result = asyncio.run(empire_client.execute_on_agent(arguments))
+            try:
+                result = asyncio.run(empire_client.execute_on_agent(arguments))
+            except ConnectionError as err:
+                result = {co.RETURN_CODE: -2, co.STD_ERR: str(err)}
 
         logger.logger.info("Finished AttackTask._execute().", correlation_id=self.correlation_id,
                            step_type=step_type)

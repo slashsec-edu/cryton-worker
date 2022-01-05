@@ -4,16 +4,15 @@ import time
 from typing import Optional
 
 import paramiko
-from utinni import EmpireApiClient, EmpireObject, EmpireApi, EmpireAgent, \
-    EmpireModuleExecutionError, EmpireModuleExecutionTimeout, EmpireLoginError
+import utinni
 
 from cryton_worker.lib.util.util import Metasploit, ssh_to_target
 from cryton_worker.etc import config
 from cryton_worker.lib.util import logger, constants as co
-from httpx import RemoteProtocolError
+from httpx import TransportError
 
 
-class EmpireClient(EmpireApiClient):
+class EmpireClient(utinni.EmpireApiClient):
     def __init__(self, host: str = config.EMPIRE_RHOST, port: int = config.EMPIRE_RPORT):
         """
         Wrapper class for EmpireApiClient.
@@ -21,7 +20,7 @@ class EmpireClient(EmpireApiClient):
         :param port: Port used for connection to Empire server
         """
         super().__init__(host, port)
-        self.empire_client = EmpireApiClient(host=host, port=port)
+        self.empire_client = utinni.EmpireApiClient(host=host, port=port)
         self.stagers = EmpireStagers(self)
 
     async def default_login(self, username: str = config.EMPIRE_USERNAME, password: str = config.EMPIRE_PASSWORD):
@@ -31,12 +30,12 @@ class EmpireClient(EmpireApiClient):
         :param password: Password used for login to Empire
         """
         try:
-            await self.login(username, password)
-        except EmpireLoginError:
+            await try_empire_request(self.login, username, password)
+        except utinni.EmpireLoginError:
             logger.logger.debug("Unable to login to the Empire server, credentials invalid")
-            raise EmpireLoginError("Unable to login to the Empire server, credentials invalid")
+            raise utinni.EmpireLoginError("Unable to login to the Empire server, credentials invalid")
 
-    async def agent_poller(self, target_ip) -> Optional[EmpireAgent]:
+    async def agent_poller(self, target_ip) -> Optional[utinni.EmpireAgent]:
         """
         Check for new agents in 1 sec interval until the right one is found.
         :param target_ip: IP address of target that agent should've been deployed to
@@ -75,7 +74,7 @@ class EmpireClient(EmpireApiClient):
         listener_options = stager_arguments.get(co.STAGER_ARGS_LISTENER_OPTIONS, {})
 
         # check if listener already exists
-        listener_get_response = await self.listeners.get(listener_name)
+        listener_get_response = await try_empire_request(self.listeners.get, listener_name)
         logger.logger.debug(f"Using existing listener '{listener_name}'")
         if "error" in listener_get_response:
             # create listener
@@ -117,21 +116,22 @@ class EmpireClient(EmpireApiClient):
         # There is timeout in execute/shell function but for some reason it's not triggered when inactive agent is used
         # and it freezes waiting for answer
         try:
-            empire_agent = await self.agents.get(agent_name)
+            empire_agent = await try_empire_request(self.agents.get, agent_name)
         except KeyError:
             return {co.RETURN_CODE: -2, co.STD_ERR: f"Agent '{agent_name}' not found in Empire."}
         else:
             logger.logger.debug(f"Agent '{agent_name}' successfully pulled from Empire.")
+
         if module_name is not None:
             # check if module exists
             try:
-                await self.modules.get(module_name)
+                await try_empire_request(self.modules.get, module_name)
             except KeyError:
                 return {co.RETURN_CODE: -2, co.STD_ERR: f"Module '{module_name}' not found in Empire."}
 
             try:
-                execution_result = await asyncio.wait_for(empire_agent.execute(module_name, module_args), 15)
-            except (EmpireModuleExecutionError, EmpireModuleExecutionTimeout) as ex:
+                execution_result = await asyncio.wait_for(try_empire_request(empire_agent.execute, module_name, module_args), 15)
+            except (utinni.EmpireModuleExecutionError, utinni.EmpireModuleExecutionTimeout) as ex:
                 logger.logger.error("Error while executing empire module", err=str(ex))
                 return {co.RETURN_CODE: -2, co.STD_ERR: str(ex)}
             except asyncio.exceptions.TimeoutError:
@@ -142,8 +142,8 @@ class EmpireClient(EmpireApiClient):
         elif shell_command is not None:
             logger.logger.debug("Executing command on agent.", agent_name=agent_name, command=shell_command)
             try:
-                execution_result = await asyncio.wait_for(empire_agent.shell(shell_command), 15)
-            except (EmpireModuleExecutionError, EmpireModuleExecutionTimeout) as ex:
+                execution_result = await asyncio.wait_for(try_empire_request(empire_agent.shell, shell_command), 15)
+            except (utinni.EmpireModuleExecutionError, utinni.EmpireModuleExecutionTimeout) as ex:
                 logger.logger.error("Error while executing shell command on agent", err=str(ex))
                 return {co.RETURN_CODE: -2, co.STD_ERR: str(ex)}
             except asyncio.exceptions.TimeoutError:
@@ -157,7 +157,7 @@ class EmpireClient(EmpireApiClient):
         return {co.RETURN_CODE: 0, co.STD_OUT: execution_result}
 
 
-class EmpireStager(EmpireObject):
+class EmpireStager(utinni.EmpireObject):
     def __init__(self, api, raw_object):
         super().__init__(api, raw_object)
 
@@ -167,31 +167,29 @@ class EmpireStager(EmpireObject):
         return await self.api.stagers.generate(stager, listener, options)
 
 
-class EmpireStagers(EmpireApi):
+class EmpireStagers(utinni.EmpireApi):
     async def get(self, stager):
-        r = await self.client.get(f"stagers/{stager}")
+        r = await try_empire_request(self.client.get, f"stagers/{stager}")
         return EmpireStager(self.api, r.json()["stagers"][0])
 
     async def generate(self, stager, listener, options):
-        r = await self.client.post(f"stagers", json={"StagerName": stager, "Listener": listener, **options})
+        r = await try_empire_request(self.client.post, f"stagers", json={"StagerName": stager, "Listener": listener, **options})
         return r.json()[stager]["Output"]
 
 
 async def try_empire_request(fc_to_run, *fc_args, **fc_kwargs):
     """
-    Try to execute empire function(REST API request), if RemoteProtocolError happens, try again.
+    Try to execute empire function(REST API request), if TransportError happens, try again.
     :param fc_to_run: Empire function to execute
     :return: Passed function result
     """
     for i in range(4):
         try:
-            result = await fc_to_run(*fc_args, **fc_kwargs)
-        except RemoteProtocolError:
-            logger.logger.debug("Event type ConnectionClosed. Retrying...")
+            return await fc_to_run(*fc_args, **fc_kwargs)
+        except TransportError:
+            logger.logger.debug("Connection error. Retrying...")
             time.sleep(1 + (i * 2))
-            continue
-        else:
-            return result
+
     raise ConnectionError("Cannot connect to the Empire server")
 
 
@@ -203,16 +201,13 @@ async def deploy_agent(arguments: dict) -> dict:
     """
     empire = EmpireClient()
     # login to Empire server
-    await empire.default_login()
+    await  empire.default_login()
 
     stager_arguments = arguments[co.STAGER_ARGUMENTS]
 
     try:
         payload = await empire.generate_payload(stager_arguments)
     except KeyError as err:
-        return {co.STD_ERR: str(err), co.RETURN_CODE: -2}
-    except ConnectionError as err:
-        logger.logger.error("Cannot connect to the Empire server")
         return {co.STD_ERR: str(err), co.RETURN_CODE: -2}
 
     # Check type of connection to target
@@ -257,8 +252,7 @@ async def deploy_agent(arguments: dict) -> dict:
     if agent is None:
         return {co.STD_ERR: "Agent could not be deployed or didn't connect to the empire server", co.RETURN_CODE: -2}
 
-    agent_rename_response = await agent.rename(new_agent_name)
+    agent_rename_response = await try_empire_request(agent.rename, new_agent_name)
     logger.logger.debug(f"Agent renamed to '{agent.name}'", response=agent_rename_response)
 
     return {co.RETURN_CODE: 0, co.STD_OUT: f"Agent '{new_agent_name}' deployed on target {target_ip}."}
-
