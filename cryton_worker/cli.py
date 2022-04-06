@@ -67,3 +67,11 @@ def start_worker(install_requirements: bool, rabbit_username: str, rabbit_passwo
     worker_obj = worker.Worker(rabbit_host, rabbit_port, rabbit_username, rabbit_password, prefix, consumer_count,
                                processor_count, max_retries, persistent)
     worker_obj.start()
+
+
+if __name__ == '__main__':
+    print("executes cli.py directly")
+    worker_obj = worker.Worker(config.RABBIT_RHOST, config.RABBIT_RPORT, config.RABBIT_USERNAME, config.RABBIT_PASSWORD,
+                               config.RABBIT_WORKER_PREFIX, config.CONSUMER_COUNT, config.PROCESSOR_COUNT,
+                               config.MAX_RETRIES, True)
+    worker_obj.start()
